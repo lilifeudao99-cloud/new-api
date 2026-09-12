@@ -215,6 +215,48 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 	require.Empty(t, decodeUserModelsResponse(t, vipRecorder))
 }
 
+func TestListModelsHidesInternalVideoBillingAliases(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{
+		Id:       1004,
+		Username: "video-alias-model-list-user",
+		Password: "password",
+		Group:    "default",
+		Status:   common.UserStatusEnabled,
+	}).Error)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: common.GrokVideoModel, ChannelId: 1, Enabled: true},
+		{Group: "default", Model: common.GrokVideoBillingModelPrefix + "720p", ChannelId: 1, Enabled: true},
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set("id", 1004)
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+
+	ids := decodeListModelsResponse(t, recorder)
+	require.Contains(t, ids, common.GrokVideoModel)
+	require.NotContains(t, ids, common.GrokVideoBillingModelPrefix+"720p")
+
+	anthropicRecorder := httptest.NewRecorder()
+	anthropicContext, _ := gin.CreateTestContext(anthropicRecorder)
+	anthropicContext.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	anthropicContext.Set("id", 1004)
+
+	ListModels(anthropicContext, constant.ChannelTypeAnthropic)
+
+	var anthropicPayload struct {
+		Data []dto.AnthropicModel `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(anthropicRecorder.Body.Bytes(), &anthropicPayload))
+	for _, item := range anthropicPayload.Data {
+		require.NotEqual(t, common.GrokVideoBillingModelPrefix+"720p", item.ID)
+	}
+}
+
 func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()

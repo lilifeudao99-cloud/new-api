@@ -44,7 +44,7 @@ func NewInsufficientUserQuotaError(userID int) *types.NewAPIError {
 		userQuota = 0
 	}
 	return types.NewErrorWithStatusCode(
-		fmt.Errorf("账户余额不足，请充值后重试。当前余额：%s。请登陆网站：https://ailili.chat 在控制台进入“钱包”完成充值。或联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)),
+		fmt.Errorf("账户余额不足，请充值后重试。当前余额：%s。请登陆网站：ailili .chat 在控制台进入“钱包”完成充值。或联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)),
 		types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 }
