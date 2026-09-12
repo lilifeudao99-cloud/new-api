@@ -235,7 +235,6 @@ export function RechargeFormCard({
                       const {
                         displayValue,
                         actualPrice,
-                        savedAmount,
                         hasDiscount,
                       } = calculatePresetPricing(
                         preset.value,
@@ -260,19 +259,18 @@ export function RechargeFormCard({
                               {formatNumber(displayValue)}
                             </div>
                             {hasDiscount && (
-                              <div className='text-xs font-medium text-green-600'>
+                              <div className='text-xs font-medium text-red-600'>
                                 {getDiscountLabel(discount)}
                               </div>
                             )}
                           </div>
-                          <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
-                            Pay {formatCurrency(actualPrice)}
-                            {hasDiscount && savedAmount > 0 && (
-                              <span className='text-green-600'>
-                                {' '}
-                                • Save {formatCurrency(savedAmount)}
-                              </span>
-                            )}
+                          <div className='text-muted-foreground mt-1.5 flex w-full items-center justify-between text-xs sm:mt-2'>
+                            <span>
+                              支付 {formatCurrency(actualPrice)}
+                            </span>
+                            <span className='text-red-600'>
+                              到账 {formatCurrency(displayValue)}
+                            </span>
                           </div>
                         </Button>
                       )
