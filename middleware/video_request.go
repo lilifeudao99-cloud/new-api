@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
-	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/gin-gonic/gin"
 )
 
@@ -43,13 +41,7 @@ func NormalizeVideoRequest() gin.HandlerFunc {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid JSON request body")
 			return
 		}
-		originalModel, _ := request["model"].(string)
 		changed := common.NormalizeVideoRequestMap(request)
-		if originalModel == common.GrokVideoModel {
-			if normalizedModel, ok := request["model"].(string); ok && common.IsInternalVideoBillingModel(normalizedModel) && !videoBillingAliasAvailable(normalizedModel) {
-				request["model"] = originalModel
-			}
-		}
 		if !changed {
 			// GetBodyStorage consumes and closes the original request body. Keep
 			// the standard request reader usable for downstream legacy handlers.
@@ -80,21 +72,4 @@ func NormalizeVideoRequest() gin.HandlerFunc {
 		c.Request.Header.Set("Content-Length", strconv.Itoa(len(normalized)))
 		c.Next()
 	}
-}
-
-func videoBillingAliasAvailable(alias string) bool {
-	generation := pluginruntime.DefaultRegistry.Generation()
-	if generation == nil {
-		return false
-	}
-	if declared, ok := generation.CanonicalModel(alias); ok {
-		_, routed := generation.LookupEndpoint(http.MethodPost, "/v1/videos", declared)
-		return routed
-	}
-	target, resolved := model.ResolveTaskModelAlias(generation, alias)
-	if !resolved || target.Alias != alias || target.Declared == "" {
-		return false
-	}
-	_, routed := generation.LookupEndpoint(http.MethodPost, "/v1/videos", target.Declared)
-	return routed
 }

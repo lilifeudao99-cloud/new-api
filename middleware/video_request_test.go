@@ -80,7 +80,7 @@ func TestNormalizeVideoRequestBodyRejectsInvalidJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestNormalizeVideoRequestKeepsGrokCanonicalWhenBillingAliasIsUnavailable(t *testing.T) {
+func TestNormalizeVideoRequestKeepsLegacyGrokBillingNormalization(t *testing.T) {
 	router := gin.New()
 	router.POST("/v1/videos", NormalizeVideoRequest(), func(c *gin.Context) {
 		storage, err := common.GetBodyStorage(c)
@@ -89,7 +89,7 @@ func TestNormalizeVideoRequestKeepsGrokCanonicalWhenBillingAliasIsUnavailable(t 
 		require.NoError(t, err)
 		var request map[string]any
 		require.NoError(t, common.Unmarshal(body, &request))
-		require.Equal(t, common.GrokVideoModel, request["model"])
+		require.Equal(t, common.GrokVideoBillingModelPrefix+"720p", request["model"])
 		require.Equal(t, "720p", request["resolution"])
 		c.Status(http.StatusNoContent)
 	})

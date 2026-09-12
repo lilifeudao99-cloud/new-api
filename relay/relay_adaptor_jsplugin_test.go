@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	jspluginadaptor "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
+	legacytask "github.com/QuantumNous/new-api/relay/channel/task/legacy"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,4 +97,63 @@ func TestGetTaskAdaptorForRequestPinsLegacyMappedPlugin(t *testing.T) {
 	require.NotNil(t, pinned.Plugin)
 	assert.Equal(t, "sora", pinned.Plugin.Meta.Key)
 	assert.Same(t, pinned.Generation, pluginruntime.DefaultRegistry.Generation())
+}
+
+func TestGetTaskAdaptorForRequestUsesLegacyGrokVideoAdaptor(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	c.Set("original_model", "grok-imagine-video")
+
+	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+
+	require.NotNil(t, adaptor)
+	assert.Equal(t, taskPlatformGrokLegacy, platform)
+	_, ok := adaptor.(*legacytask.TaskAdaptor)
+	assert.True(t, ok, "Grok-compatible video requests must not depend on the Sora plugin")
+}
+
+func TestGetTaskAdaptorForRequestDetectsMappedGrokVideoModel(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	c.Set("original_model", "customer-video")
+	c.Set("model_mapping", `{"customer-video":"grok-imagine-video"}`)
+
+	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+
+	require.NotNil(t, adaptor)
+	assert.Equal(t, taskPlatformGrokLegacy, platform)
+	assert.IsType(t, &legacytask.TaskAdaptor{}, adaptor)
+}
+
+func TestGetTaskAdaptorForRequestDetectsGrokBillingModel(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	c.Set("original_model", common.GrokVideoBillingModelPrefix+"720p")
+
+	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+
+	assert.Equal(t, taskPlatformGrokLegacy, platform)
+	assert.IsType(t, &legacytask.TaskAdaptor{}, adaptor)
+}
+
+func TestGetTaskAdaptorForRequestUsesLegacyAdaptorForNonSoraVideo(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	c.Set("original_model", "kling-v1")
+
+	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+
+	assert.Equal(t, taskPlatformGrokLegacy, platform)
+	assert.IsType(t, &legacytask.TaskAdaptor{}, adaptor)
+}
+
+func TestGetTaskAdaptorForRequestKeepsSoraPlugin(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	c.Set("original_model", "sora-2")
+
+	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+
+	assert.Equal(t, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)), platform)
+	assert.IsType(t, &jspluginadaptor.TaskAdaptor{}, adaptor)
 }

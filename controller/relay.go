@@ -802,6 +802,11 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 	if ratiosJSON, err := common.Marshal(otherRatios); err == nil {
 		c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
 	}
+	if outcome != nil && outcome.Result != nil && outcome.Result.ClientResponse != nil {
+		diagnostics.present(outcome.Task, "legacy_client_response")
+		c.JSON(http.StatusOK, outcome.Result.ClientResponse)
+		return
+	}
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists {
 		if pinned, ok := pinnedValue.(pluginruntime.PinnedRoute); ok && pinned.Plugin != nil && pinned.Route.Render != "" {
 			view, err := service.BuildTaskPluginView(outcome.Task)

@@ -10,6 +10,18 @@ const (
 	GrokVideoBillingModelPrefix = GrokVideoModel + "-billing-"
 )
 
+// IsSoraVideoModel identifies the only models that use the Sora task plugin
+// on the shared OpenAI Video endpoint. All other video models use the legacy
+// OpenAI-compatible task adaptor.
+func IsSoraVideoModel(model string) bool {
+	switch strings.TrimSpace(model) {
+	case "sora-2", "sora-2-pro":
+		return true
+	default:
+		return false
+	}
+}
+
 var grokVideoBillingModels = map[string]string{
 	"480p":  GrokVideoBillingModelPrefix + "480p",
 	"720p":  GrokVideoBillingModelPrefix + "720p",

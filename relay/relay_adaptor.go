@@ -3,7 +3,9 @@ package relay
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	_ "github.com/QuantumNous/new-api/plugins"
@@ -37,6 +39,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/sub2api"
 	"github.com/QuantumNous/new-api/relay/channel/submodel"
 	jspluginadaptor "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
+	legacytask "github.com/QuantumNous/new-api/relay/channel/task/legacy"
 	"github.com/QuantumNous/new-api/relay/channel/tencent"
 	"github.com/QuantumNous/new-api/relay/channel/vertex"
 	"github.com/QuantumNous/new-api/relay/channel/volcengine"
@@ -153,6 +156,11 @@ var taskPluginKeys = map[constant.TaskPlatform]string{
 	constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi)):    "vertex-ai",
 }
 
+// taskPlatformGrokLegacy is the persisted platform value for tasks submitted
+// through the legacy OpenAI-compatible video contract. The value is retained
+// for compatibility with existing Grok tasks.
+const taskPlatformGrokLegacy constant.TaskPlatform = "grok-legacy"
+
 func ResolveTaskPluginForPlatform(generation *pluginruntime.RoutingGeneration, platform constant.TaskPlatform) (*pluginruntime.LoadedPlugin, bool) {
 	if generation == nil {
 		return nil, false
@@ -186,6 +194,9 @@ func TaskPlatformUnavailableError(platform constant.TaskPlatform) (string, strin
 }
 
 func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
+	if platform == taskPlatformGrokLegacy {
+		return &legacytask.TaskAdaptor{}
+	}
 	plugin, ok := ResolveTaskPluginForPlatform(pluginruntime.DefaultRegistry.Generation(), platform)
 	if !ok {
 		return nil
@@ -197,6 +208,12 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 // declarative or shared-endpoint router. Legacy task routes are pinned here
 // from one registry generation before the adaptor is returned.
 func getTaskAdaptorForRequest(c *gin.Context, platform constant.TaskPlatform) (constant.TaskPlatform, channel.TaskAdaptor) {
+	// Only Sora video models use the task plugin on the shared endpoint. Check
+	// this before pinned plugin state so other video models cannot be claimed by
+	// Sora or another shared video plugin.
+	if isLegacyOpenAIVideoRequest(c) {
+		return taskPlatformGrokLegacy, &legacytask.TaskAdaptor{}
+	}
 	if c != nil {
 		if value, exists := c.Get(pluginruntime.ContextKeyPinnedPlugin); exists {
 			if pinned, ok := value.(pluginruntime.PinnedPlugin); ok && pinned.Plugin != nil {
@@ -232,4 +249,34 @@ func getTaskAdaptorForRequest(c *gin.Context, platform constant.TaskPlatform) (c
 		})
 	}
 	return platform, jspluginadaptor.New(plugin)
+}
+
+func isLegacyOpenAIVideoRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil || c.Request.URL.Path != "/v1/videos" {
+		return false
+	}
+	modelName := strings.TrimSpace(c.GetString("original_model"))
+	if modelName == "" {
+		modelName = strings.TrimSpace(c.GetString("resolved_task_model"))
+	}
+	if modelName == "" {
+		modelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	}
+	mapping := map[string]string{}
+	if rawMapping := strings.TrimSpace(c.GetString("model_mapping")); rawMapping != "" && rawMapping != "{}" {
+		_ = common.Unmarshal([]byte(rawMapping), &mapping)
+	}
+	visited := map[string]bool{}
+	for i := 0; i < 32 && modelName != "" && !visited[modelName]; i++ {
+		if common.IsSoraVideoModel(modelName) {
+			return false
+		}
+		visited[modelName] = true
+		mapped := strings.TrimSpace(mapping[modelName])
+		if mapped == "" {
+			return true
+		}
+		modelName = mapped
+	}
+	return modelName != ""
 }

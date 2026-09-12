@@ -338,6 +338,13 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		// Only Sora owns the shared OpenAI Video endpoint. Other video models
+		// retain the legacy OpenAI-compatible request/response contract.
+		if c.Request.URL.Path == "/v1/videos" && !common.IsSoraVideoModel(claimedModel) {
+			c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
+			c.Next()
+			return
+		}
 		lookupModel := claimedModel
 		pinModel := claimedModel
 		mappedModel := ""
