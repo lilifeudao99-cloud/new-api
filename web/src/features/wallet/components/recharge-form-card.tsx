@@ -16,7 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
+import {
+  Gift,
+  ExternalLink,
+  Flame,
+  Loader2,
+  Receipt,
+  WalletCards,
+} from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -34,7 +41,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import {
@@ -226,7 +232,7 @@ export function RechargeFormCard({
                     {t('Amount')}
                   </Label>
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 md:grid-cols-4'>
-                    {presetAmounts.map((preset) => {
+                    {presetAmounts.map((preset, presetIndex) => {
                       const discount =
                         preset.discount ||
                         topupInfo?.discount?.[preset.value] ||
@@ -241,9 +247,9 @@ export function RechargeFormCard({
                         usdExchangeRate
                       )
                       const discountPercent =
-                        preset.value > 0
+                        actualPrice > 0
                           ? Math.round(
-                              ((displayValue - preset.value) / preset.value) * 100
+                              ((displayValue - actualPrice) / actualPrice) * 100
                             )
                           : 0
                       const hasDiscount = discountPercent > 0
@@ -260,8 +266,14 @@ export function RechargeFormCard({
                           onClick={() => onSelectPreset(preset)}
                         >
                           <div className='flex w-full items-center justify-between'>
-                            <div className='text-base font-semibold sm:text-lg'>
-                              ${formatNumber(preset.value)}
+                            <div className='flex items-center gap-1 text-base font-semibold sm:text-lg'>
+                              {formatCurrency(actualPrice)}
+                              {presetIndex === 1 && (
+                                <span className='inline-flex items-center gap-0.5 rounded-full bg-gradient-to-r from-orange-500 to-red-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white shadow-sm'>
+                                  <Flame className='size-3.5' aria-hidden='true' />
+                                  热门
+                                </span>
+                              )}
                             </div>
                             {hasDiscount && (
                               <div className='text-xs font-medium text-red-600'>
@@ -269,7 +281,7 @@ export function RechargeFormCard({
                               </div>
                             )}
                           </div>
-                          <div className='text-muted-foreground mt-1.5 flex w-full items-center justify-between text-xs sm:mt-2'>
+                          <div className='text-muted-foreground mt-1.5 flex w-full items-center gap-3 text-xs sm:mt-2'>
                             <span>
                               支付 {formatCurrency(actualPrice)}
                             </span>

@@ -144,6 +144,7 @@ export function Wallet(props: WalletProps) {
       const minTopup = getMinTopupAmount(topupInfo)
       const defaultAmount = presetAmounts[1]?.value || minTopup
       setTopupAmount(defaultAmount)
+      setSelectedPreset(defaultAmount)
 
       // Calculate initial payment amount with default payment type
       const defaultPaymentType = getDefaultPaymentType(topupInfo)
