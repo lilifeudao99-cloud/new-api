@@ -2,8 +2,9 @@ name: Build and publish mymain image
 
 on:
   push:
-    branches:
-      - mymain
+    tags:
+      - 'mymain'
+      - 'mymain-*'
   workflow_dispatch:
 
 permissions:
