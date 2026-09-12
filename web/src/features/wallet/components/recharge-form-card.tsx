@@ -256,7 +256,7 @@ export function RechargeFormCard({
                         >
                           <div className='flex w-full items-center justify-between'>
                             <div className='text-base font-semibold sm:text-lg'>
-                              {formatNumber(displayValue)}
+                              {formatNumber(preset.value)}
                             </div>
                             {hasDiscount && (
                               <div className='text-xs font-medium text-red-600'>
