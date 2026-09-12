@@ -37,6 +37,18 @@ type BillingSession struct {
 	mu               sync.Mutex
 }
 
+// NewInsufficientUserQuotaError returns the site-specific user-facing balance message.
+func NewInsufficientUserQuotaError(userID int) *types.NewAPIError {
+	userQuota, err := model.GetUserQuota(userID, false)
+	if err != nil {
+		userQuota = 0
+	}
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("账户余额不足，请充值后重试。当前余额：%s。请登陆网站：ailili.chat 在控制台进入“钱包”完成充值。或联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)),
+		types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+}
+
 // Settle 根据实际消耗额度进行结算。
 // 资金来源和令牌额度分两步提交：若资金来源已提交但令牌调整失败，
 // 会标记 fundingSettled 防止 Refund 对已提交的资金来源执行退款。
@@ -225,14 +237,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		if errors.Is(err, ErrInsufficientWalletQuota) {
-			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
-			if quotaErr != nil {
-				userQuota = 0
-			}
-			return types.NewErrorWithStatusCode(
-				fmt.Errorf("用户额度不足, 剩余额度: %s。联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)),
-				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			return NewInsufficientUserQuotaError(s.relayInfo.UserId)
 		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
@@ -257,11 +262,7 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 			// overrides. Reserve atomically instead of admitting wallet debt.
 			if err := funding.PreConsume(delta); err != nil {
 				if errors.Is(err, ErrInsufficientWalletQuota) {
-					userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
-					if quotaErr != nil {
-						userQuota = 0
-					}
-					return types.NewErrorWithStatusCode(fmt.Errorf("用户额度不足, 剩余额度: %s。联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+					return NewInsufficientUserQuotaError(s.relayInfo.UserId)
 				}
 				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 			}
@@ -392,16 +393,10 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}
 		if userQuota <= 0 {
-			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("用户额度不足, 剩余额度: %s", logger.FormatQuota(userQuota)),
-				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			return nil, NewInsufficientUserQuotaError(relayInfo.UserId)
 		}
 		if userQuota-preConsumedQuota < 0 {
-			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("预扣费额度失败, 用户剩余额度: %s, 需要预扣费额度: %s", logger.FormatQuota(userQuota), logger.FormatQuota(preConsumedQuota)),
-				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			return nil, NewInsufficientUserQuotaError(relayInfo.UserId)
 		}
 		relayInfo.UserQuota = userQuota
 
