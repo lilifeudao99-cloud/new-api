@@ -12,6 +12,7 @@ import (
 )
 
 func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code ...types.ErrorCode) {
+	publicMessage := common.RewriteExternalErrorURLs(message, c.Request.Host, c.GetHeader("X-Forwarded-Proto"))
 	codeStr := ""
 	if len(code) > 0 {
 		codeStr = string(code[0])
@@ -20,12 +21,12 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 	_, preparedPluginRoute := c.Get(pluginruntime.ContextKeyRouteRequest)
 	if !preparedPluginRoute || !RespondTaskPluginError(c, &dto.TaskError{
 		Code:       codeStr,
-		Message:    message,
+		Message:    publicMessage,
 		StatusCode: statusCode,
 	}) {
 		c.JSON(statusCode, gin.H{
 			"error": gin.H{
-				"message": common.MessageWithRequestId(message, c.GetString(common.RequestIdKey)),
+				"message": common.MessageWithRequestId(publicMessage, c.GetString(common.RequestIdKey)),
 				"type":    "new_api_error",
 				"code":    codeStr,
 			},

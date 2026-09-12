@@ -1238,7 +1238,8 @@ func RespondTaskPluginError(c *gin.Context, taskErr *dto.TaskError) bool {
 	if !exists || !ok || pinned.Plugin == nil {
 		return false
 	}
-	sanitized := sanitizedTaskPluginError(taskErr.StatusCode, taskErr.Message)
+	publicMessage := common.RewriteExternalErrorURLs(taskErr.Message, c.Request.Host, c.GetHeader("X-Forwarded-Proto"))
+	sanitized := sanitizedTaskPluginError(taskErr.StatusCode, publicMessage)
 	requestID := c.GetString(common.RequestIdKey)
 	hasRenderer, err := pinned.Plugin.Engine.HasCallablePath(c.Request.Context(), "native", "error")
 	requestValue, exists := c.Get(pluginruntime.ContextKeyRouteRequest)
