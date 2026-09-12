@@ -12,5 +12,8 @@ var builtinBillingExpr = map[string]string{
 	// Standard pricing; the long-context rates apply to the whole request.
 	// Do not infer service-tier discounts from incoming request parameters:
 	// channels filter service_tier by default, so it may not reach the upstream.
-	"gpt-6-astra": `len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5) : tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25)`,
+	"gpt-6-astra":   `len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5) : tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25)`,
+	"gpt-5.6-sol":   `len <= 272000 ? tier("standard", p * 5 + cr * 1 + cc * 6.25 + c * 30) : tier("long_context", p * 10 + cr * 2 + cc * 12.5 + c * 45)`,
+	"gpt-5.6-terra": `len <= 272000 ? tier("standard", p * 2.5 + cr * 0.5 + cc * 3.125 + c * 15) : tier("long_context", p * 5 + cr * 1 + cc * 6.25 + c * 22.5)`,
+	"gpt-5.6-luna":  `len <= 272000 ? tier("standard", p * 2.5 + cr * 0.5 + cc * 3.125 + c * 15) : tier("long_context", p * 5 + cr * 1 + cc * 6.25 + c * 22.5)`,
 }

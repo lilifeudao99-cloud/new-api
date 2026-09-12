@@ -294,6 +294,14 @@ func ValidateBasicTaskRequest(c *gin.Context, info *RelayInfo, action string) *d
 	if err := common.UnmarshalBodyReusable(c, &req); err != nil {
 		return createTaskError(err, "invalid_request", http.StatusBadRequest, true)
 	}
+	if strings.TrimSpace(req.Resolution) != "" {
+		req.Resolution = strings.ToLower(strings.TrimSpace(req.Resolution))
+		if req.Resolution != "480p" && req.Resolution != "720p" && req.Resolution != "1080p" {
+			return createTaskError(fmt.Errorf("resolution must be 480p, 720p or 1080p"), "invalid_resolution", http.StatusBadRequest, true)
+		}
+	} else if strings.HasPrefix(req.Model, "grok-imagine-video") {
+		req.Resolution = "1080p"
+	}
 
 	if taskErr := validatePrompt(req.Prompt); taskErr != nil {
 		return taskErr

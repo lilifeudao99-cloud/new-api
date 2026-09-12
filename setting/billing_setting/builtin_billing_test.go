@@ -148,3 +148,15 @@ func TestImageModelBuiltinPricesAndOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestGPT56BuiltinBillingExpressions(t *testing.T) {
+	for _, name := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		expression, ok := billing_setting.GetBillingExpr(name)
+		require.True(t, ok)
+		require.Contains(t, expression, `len <= 272000`)
+		require.Contains(t, expression, `tier("standard"`)
+		require.Contains(t, expression, `tier("long_context"`)
+		_, err := billingexpr.CompileFromCache(expression)
+		require.NoError(t, err)
+	}
+}

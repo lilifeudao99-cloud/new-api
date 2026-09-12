@@ -27,4 +27,7 @@ import { type TopNavLink } from '../types'
  * This is intentionally empty to encourage backend configuration.
  * If you need fallback links, add them here.
  */
-export const defaultTopNavLinks: TopNavLink[] = []
+export const defaultTopNavLinks: TopNavLink[] = [
+  { title: '模型广场', href: '/pricing' },
+  { title: '快速生图', href: '/playground' },
+]

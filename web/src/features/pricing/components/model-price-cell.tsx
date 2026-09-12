@@ -162,11 +162,6 @@ export function ModelPriceCell(props: {
     if (dynamic.isMixedBilling) {
       caption += ` · ${t('Token or per-call pricing')}`
     }
-    if (providerCaption) caption += ` · ${providerCaption}`
-    if (unconfiguredCaption) caption += ` · ${unconfiguredCaption}`
-    if (dynamic.tierCount > 1) {
-      caption += ` · ${t('{{count}} tiers', { count: dynamic.tierCount })}`
-    }
   } else {
     if (isUnconfiguredTaskUsageModel(props.model)) {
       return (

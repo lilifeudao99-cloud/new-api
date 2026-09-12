@@ -760,13 +760,6 @@ function PriceSection(props: {
     return (
       <section>
         <SectionTitle>{t('Base Price')}</SectionTitle>
-        {dynamicSummary.providerCount && (
-          <p className='text-muted-foreground mb-2 text-xs'>
-            {t('{{count}} providers', { count: dynamicSummary.providerCount })}
-            {dynamicSummary.hasUnconfiguredProviders &&
-              ` · ${t('Not configured for some providers')}`}
-          </p>
-        )}
         {dynamicSummary.isMixedBilling && (
           <p className='text-muted-foreground mb-2 text-xs'>
             {t('Token or per-call pricing')}
