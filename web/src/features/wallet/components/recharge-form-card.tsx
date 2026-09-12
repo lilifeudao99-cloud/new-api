@@ -39,7 +39,6 @@ import { cn } from '@/lib/utils'
 
 import {
   formatCurrency,
-  getDiscountLabel,
   getPaymentIcon,
   getMinTopupAmount,
   calculatePresetPricing,
@@ -235,13 +234,19 @@ export function RechargeFormCard({
                       const {
                         displayValue,
                         actualPrice,
-                        hasDiscount,
                       } = calculatePresetPricing(
                         preset.value,
                         priceRatio,
                         discount,
                         usdExchangeRate
                       )
+                      const discountPercent =
+                        preset.value > 0
+                          ? Math.round(
+                              ((displayValue - preset.value) / preset.value) * 100
+                            )
+                          : 0
+                      const hasDiscount = discountPercent > 0
                       return (
                         <Button
                           key={preset.value}
@@ -256,11 +261,11 @@ export function RechargeFormCard({
                         >
                           <div className='flex w-full items-center justify-between'>
                             <div className='text-base font-semibold sm:text-lg'>
-                              {formatNumber(preset.value)}
+                              ${formatNumber(preset.value)}
                             </div>
                             {hasDiscount && (
                               <div className='text-xs font-medium text-red-600'>
-                                {getDiscountLabel(discount)}
+                                优惠 {discountPercent}%
                               </div>
                             )}
                           </div>
@@ -269,7 +274,7 @@ export function RechargeFormCard({
                               支付 {formatCurrency(actualPrice)}
                             </span>
                             <span className='text-red-600'>
-                              到账 {formatCurrency(displayValue)}
+                              到账 ${formatCurrency(displayValue)}
                             </span>
                           </div>
                         </Button>
