@@ -166,6 +166,7 @@ export const STATIC_I18N_KEYS = [
   'Home',
   'Console',
   'Model Square',
+  'Quick Image',
   'Rankings',
   'Docs',
   'About',

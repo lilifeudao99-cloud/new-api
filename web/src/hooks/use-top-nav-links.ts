@@ -79,6 +79,12 @@ export function useTopNavLinks(): TopNavLink[] {
     links.push({ title: t('Model Square'), href: '/pricing', requiresAuth })
   }
 
+  // The playground is part of the unified frontend and should not depend on
+  // a separately injected navigation script or backend module configuration.
+  if (isAuthed) {
+    links.push({ title: t('Quick Image'), href: '/playground' })
+  }
+
   // Rankings
   const rankings = modules?.rankings
   if (rankings && typeof rankings === 'object' && rankings.enabled) {
