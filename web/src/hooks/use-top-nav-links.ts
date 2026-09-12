@@ -82,7 +82,11 @@ export function useTopNavLinks(): TopNavLink[] {
   // The playground is part of the unified frontend and should not depend on
   // a separately injected navigation script or backend module configuration.
   if (isAuthed) {
-    links.push({ title: t('Quick Image'), href: '/playground' })
+    links.push({
+      title: '快速生图',
+      href: 'https://cpa-image.site/zh-CN/',
+      external: true,
+    })
   }
 
   // Rankings
