@@ -53,6 +53,7 @@ import {
   pricingOptions,
 } from '@/features/model-pricing/pricing'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
+import { isPerSecondVideoModel } from '@/features/pricing/lib/model-helpers'
 import { splitPluginBillingExprKey } from '@/features/pricing/lib/plugin-pricing'
 import { useMediaQuery } from '@/hooks'
 
@@ -157,6 +158,13 @@ const ModelRatioVisualEditorComponent = forwardRef<
   const pricingConfig = useModelPricing(
     editData?.name ? [editData.name] : [],
     Boolean(editData?.name)
+  )
+  const selectedPricingModel = useMemo(
+    () => pricingModels.find((model) => model.model_name === editData?.name),
+    [pricingModels, editData?.name]
+  )
+  const selectedIsVideoModel = Boolean(
+    selectedPricingModel && isPerSecondVideoModel(selectedPricingModel)
   )
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
@@ -753,6 +761,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
                   (entry) => entry.model_name === editData?.name
                 )?.usage_schema
               }
+              isVideoModel={selectedIsVideoModel}
               onSave={onSave}
               isSaving={isSaving}
               className='h-full min-h-0'
@@ -803,6 +812,7 @@ const ModelRatioVisualEditorComponent = forwardRef<
               (entry) => entry.model_name === editData?.name
             )?.usage_schema
           }
+          isVideoModel={selectedIsVideoModel}
           onSave={onSave}
           isSaving={isSaving}
         />

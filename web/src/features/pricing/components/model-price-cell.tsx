@@ -30,7 +30,7 @@ import {
   getDynamicPricingSummary,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import { isPerSecondVideoModel, isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskUsageUnitLabel } from '../lib/task-price-display'
 import type { PricingModel, TokenUnit } from '../types'
@@ -118,7 +118,10 @@ export function ModelPriceCell(props: {
       )
     }
     const hasRequestPrice = dynamic.primaryEntries.some(
-      (entry) => entry.unit === 'request' || entry.unit === 'image'
+      (entry) =>
+        entry.unit === 'request' ||
+        entry.unit === 'image' ||
+        entry.unit === 'second'
     )
     metrics = dynamic.primaryEntries
       .slice(0, hasRequestPrice ? 3 : 2)
@@ -214,7 +217,9 @@ export function ModelPriceCell(props: {
     } else {
       metrics = [
         {
-          label: t('Per-request'),
+          label: t(
+            isPerSecondVideoModel(props.model) ? 'Per-second' : 'Per-request'
+          ),
           value: formatRequestPrice(
             props.model,
             options.showRechargePrice,
@@ -225,7 +230,7 @@ export function ModelPriceCell(props: {
           ),
         },
       ]
-      caption = `${currencyLabel} / ${t('request')}`
+      caption = `${currencyLabel} / ${t(isPerSecondVideoModel(props.model) ? 'second' : 'request')}`
     }
   }
   return (

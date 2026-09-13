@@ -18,10 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { PricingModel } from '../types'
 import { hasTaskUsageSchema, isDynamicPricingModel } from './dynamic-price'
-import { isTokenBasedModel } from './model-helpers'
+import { isPerSecondVideoModel, isTokenBasedModel } from './model-helpers'
 
 export type BillingModeLabelKey =
   | 'Per Request'
+  | 'Per Second'
   | 'Dynamic Pricing'
   | 'Token-based'
   | 'Task billing'
@@ -34,5 +35,6 @@ export function getBillingModeLabelKey(
   if (hasTaskUsageSchema(model)) return 'Task billing'
   if (isDynamicPricingModel(model)) return 'Dynamic Pricing'
   if (isTokenBasedModel(model)) return 'Token-based'
+  if (isPerSecondVideoModel(model)) return 'Per Second'
   return 'Per Request'
 }

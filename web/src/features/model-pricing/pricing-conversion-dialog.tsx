@@ -53,6 +53,7 @@ export type PricingConversionPreview = {
 export function PricingConversionDialog(props: {
   preview: PricingConversionPreview
   currency: PricingCurrency
+  isVideoModel?: boolean
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -70,7 +71,8 @@ export function PricingConversionDialog(props: {
     t,
     props.currency,
     props.preview.cacheWriteMode,
-    props.preview.billingDetails
+    props.preview.billingDetails,
+    props.isVideoModel
   ).filter((row) => row.value !== t('Empty'))
   const tiers = parseTiersFromExpr(
     splitBillingExprAndRequestRules(props.preview.expression).billingExpr
@@ -128,6 +130,7 @@ export function PricingConversionDialog(props: {
                   ? t('request')
                   : t('1M token')
               if (row.unit === 'image') unitLabel = t('image')
+              if (row.unit === 'second') unitLabel = t('second')
               return (
                 <div
                   key={row.key}

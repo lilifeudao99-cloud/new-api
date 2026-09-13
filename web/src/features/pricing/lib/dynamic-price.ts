@@ -37,7 +37,7 @@ import {
   type ParsedTier,
 } from './billing-expr'
 import { compileBillingExpression } from './billing-expression/parser'
-import { getDisplayGroupRatio } from './model-helpers'
+import { getDisplayGroupRatio, isPerSecondVideoModel } from './model-helpers'
 import { withPluginPricing } from './plugin-pricing'
 import {
   evaluateTaskVisualConfig,
@@ -401,15 +401,16 @@ export function getDynamicPricingSummary(
       typeof model.model_price === 'number' &&
       variants.some((variant) => variant.billing_mode === 'ratio')
     ) {
+      const video = isPerSecondVideoModel(model)
       perCallEntries.push({
         key: 'modelPrice',
         field: 'modelPrice',
-        label: 'Price per request',
-        shortLabel: 'Per-call',
+        label: video ? 'Price per second' : 'Price per request',
+        shortLabel: video ? 'Per-second' : 'Per-call',
         labelKind: 'i18n',
         value: model.model_price,
         formatted: formatTaskUsageUnitPrice(model.model_price, options),
-        unit: 'request',
+        unit: video ? 'second' : 'request',
       })
     }
     const ranges = new Map<

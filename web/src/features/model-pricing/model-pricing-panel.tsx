@@ -26,7 +26,9 @@ import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
 import { ModelPriceCell } from '@/features/pricing/components/model-price-cell'
+import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { isDynamicPricingModel } from '@/features/pricing/lib/dynamic-price'
+import { isPerSecondVideoModel } from '@/features/pricing/lib/model-helpers'
 import {
   buildPreviewRows,
   createInitialLaneState,
@@ -63,6 +65,7 @@ export function ModelPricingPanel(props: {
   )
   const canEdit = useCanEditModelPricing()
   const query = useModelPricing([props.modelName], Boolean(props.modelName))
+  const { models: pricingModels } = usePricingData()
   const save = useSaveModelPricing()
   const [entry, setEntry] = useState<ModelPricingEntry | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
@@ -129,7 +132,14 @@ export function ModelPricingPanel(props: {
     )
   }
   if (!editData || !entry) return <LoadingState />
+  const videoModel = pricingModels.some(
+    (model) =>
+      model.model_name === props.modelName && isPerSecondVideoModel(model)
+  )
   const effectivePricing = modelPricingDisplay(entry)
+  const displayPricing = videoModel
+    ? { ...effectivePricing, supported_endpoint_types: ['openai-video'] }
+    : effectivePricing
   const siteCurrency = getSitePricingCurrency(currencyConfig)
   const currency =
     currencyPreference === 'site' && isValidPricingCurrency(siteCurrency)
@@ -148,7 +158,8 @@ export function ModelPricingPanel(props: {
     t,
     currency,
     entry.cache_write_mode,
-    entry.billing_details
+    entry.billing_details,
+    videoModel
   ).filter(
     (row) =>
       row.key !== 'inputPrice' &&
@@ -165,6 +176,7 @@ export function ModelPricingPanel(props: {
         editData={editData}
         usageSchema={entry.usage_schema}
         pluginVariants={entry.plugin_variants}
+        isVideoModel={videoModel}
         onDirtyChange={props.onDirtyChange}
         onSave={() => persist()}
         isSaving={save.isPending}
@@ -197,7 +209,7 @@ export function ModelPricingPanel(props: {
               </h3>
               <div className='max-w-xs'>
                 <ModelPriceCell
-                  model={effectivePricing}
+                  model={displayPricing}
                   options={{ tokenUnit: 'M' }}
                   showExpression={false}
                 />

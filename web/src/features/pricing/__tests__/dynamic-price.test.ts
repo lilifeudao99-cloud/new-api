@@ -31,7 +31,11 @@ import {
   hasTaskUsageSchema,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import {
+  isPerSecondVideoModel,
+  isTokenBasedModel,
+  isVideoModel,
+} from '../lib/model-helpers'
 import type { PricingModel } from '../types'
 
 function pricingModel(overrides: Partial<PricingModel>): PricingModel {
@@ -331,6 +335,7 @@ describe('task dynamic pricing', () => {
 
   test('leaves fixed per-request pricing configured when a usage schema is present', () => {
     const model = pricingModel({
+      model_name: 'MiniMax-H3',
       quota_type: 1,
       model_price: 0.5,
       billing_usage_schema: {
@@ -341,6 +346,62 @@ describe('task dynamic pricing', () => {
     assert.equal(isUnconfiguredTaskUsageModel(model), false)
     assert.equal(getDynamicPricingSummary(model, summaryOptions), null)
     assert.equal(isTokenBasedModel(model), false)
+  })
+
+  test('identifies openai-video models for per-second display pricing except fixed H3 aliases', () => {
+    const model = pricingModel({
+      model_name: 'MiniMax-H3',
+      quota_type: 1,
+      model_price: 0.5,
+      supported_endpoint_types: ['openai-video'],
+    })
+
+    assert.equal(isVideoModel(model), true)
+    assert.equal(isPerSecondVideoModel(model), true)
+    assert.equal(
+      isVideoModel({ ...model, supported_endpoint_types: ['openai'] }),
+      true
+    )
+    assert.equal(
+      isPerSecondVideoModel({
+        ...model,
+        model_name: 'Minimax-H3-768p-933-10s',
+      }),
+      false
+    )
+    assert.equal(
+      isPerSecondVideoModel({
+        ...model,
+        model_name: 'Minimax-H3-768p-933-15s',
+      }),
+      false
+    )
+    assert.equal(
+      isPerSecondVideoModel({ ...model, model_name: 'grok-video-3' }),
+      true
+    )
+    assert.equal(
+      isPerSecondVideoModel({
+        ...model,
+        model_name: 'MiniMax-H3',
+        supported_endpoint_types: ['openai'],
+      }),
+      true
+    )
+  })
+
+  test('labels fixed video models as per-second billing', () => {
+    assert.equal(
+      getBillingModeLabelKey(
+        pricingModel({
+          model_name: 'MiniMax-H3',
+          quota_type: 1,
+          model_price: 0.5,
+          supported_endpoint_types: ['openai-video'],
+        })
+      ),
+      'Per Second'
+    )
   })
 
   test('labels task token usage prices without changing chat token units', () => {

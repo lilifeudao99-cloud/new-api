@@ -107,3 +107,23 @@ export function replaceModelInPath(path: string, modelName: string): string {
 export function isTokenBasedModel(model: PricingModel): boolean {
   return model.quota_type === QUOTA_TYPE_VALUES.TOKEN
 }
+
+/** Recognize video models even when catalog metadata omits the endpoint type. */
+export function isVideoModel(model: PricingModel): boolean {
+  if (model.supported_endpoint_types?.includes('openai-video')) return true
+  return /sora|veo|kling|pika|video|wan-|hunyuanvideo|minimax-h3/i.test(
+    model.model_name
+  )
+}
+
+export function isPerSecondVideoModel(model: PricingModel): boolean {
+  if (
+    model.model_name === 'Minimax-H3-768p-933-10s' ||
+    model.model_name === 'Minimax-H3-768p-933-15s'
+  ) {
+    return false
+  }
+  if (model.model_name === 'MiniMax-H3') return true
+  if (!isVideoModel(model)) return false
+  return true
+}

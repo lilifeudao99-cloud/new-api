@@ -123,6 +123,7 @@ type ModelPricingSheetProps = {
   isSaving?: boolean
   usageSchema?: BillingUsageSchema
   pluginVariants?: ModelPricingPluginVariant[]
+  isVideoModel?: boolean
   onDirtyChange?: (dirty: boolean) => void
 }
 
@@ -153,6 +154,7 @@ export const ModelPricingSheet = forwardRef<
     isSaving,
     usageSchema,
     pluginVariants,
+    isVideoModel,
     onDirtyChange,
   },
   ref
@@ -176,6 +178,7 @@ export const ModelPricingSheet = forwardRef<
           editData={editData}
           usageSchema={usageSchema}
           pluginVariants={pluginVariants}
+          isVideoModel={isVideoModel}
           onDirtyChange={onDirtyChange}
           onSave={onSave}
           isSaving={isSaving}
@@ -197,6 +200,7 @@ export const ModelPricingEditorPanel = forwardRef<
     isSaving,
     usageSchema,
     pluginVariants,
+    isVideoModel = false,
     onDirtyChange,
     embedded = false,
     scrollHeader,
@@ -569,7 +573,8 @@ export const ModelPricingEditorPanel = forwardRef<
       t,
       currency,
       effectivePreview?.cacheWriteMode,
-      effectivePreview?.billingDetails
+      effectivePreview?.billingDetails,
+      isVideoModel
     )
   }, [
     resolvedBillingExpr,
@@ -582,6 +587,7 @@ export const ModelPricingEditorPanel = forwardRef<
     watchedValues,
     currency,
     effectivePreview,
+    isVideoModel,
   ])
 
   const warnings = useMemo(() => {
@@ -1102,7 +1108,13 @@ export const ModelPricingEditorPanel = forwardRef<
                           render={({ field }) => (
                             <FormItem className='contents'>
                               <Field>
-                                <FormLabel>{t('Fixed price')}</FormLabel>
+                                <FormLabel>
+                                  {t(
+                                    isVideoModel
+                                      ? 'Price per second'
+                                      : 'Fixed price'
+                                  )}
+                                </FormLabel>
                                 <InputGroup className='has-[[data-pricing-error]]:h-auto has-[[data-pricing-error]]:flex-wrap'>
                                   <InputGroupAddon>
                                     {currency.symbol}
@@ -1118,12 +1130,18 @@ export const ModelPricingEditorPanel = forwardRef<
                                     />
                                   </FormControl>
                                   <InputGroupAddon align='inline-end'>
-                                    {t('per request')}
+                                    {t(
+                                      isVideoModel
+                                        ? 'per second'
+                                        : 'per request'
+                                    )}
                                   </InputGroupAddon>
                                 </InputGroup>
                                 <FormDescription>
                                   {t(
-                                    'Cost in {{currency}} per request, regardless of tokens used.',
+                                    isVideoModel
+                                      ? 'Cost in {{currency}} per second of video.'
+                                      : 'Cost in {{currency}} per request, regardless of tokens used.',
                                     { currency: currency.label }
                                   )}
                                 </FormDescription>
@@ -1207,6 +1225,7 @@ export const ModelPricingEditorPanel = forwardRef<
         <PricingConversionDialog
           preview={conversionPreview}
           currency={currency}
+          isVideoModel={isVideoModel}
           onCancel={() => {
             conversionGeneration.current += 1
             setConversionPreview(null)

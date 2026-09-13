@@ -76,6 +76,8 @@ export const STATIC_I18N_KEYS = [
   'Connect to model services from another New API instance',
 
   'Price per image',
+  'Price per second',
+  'Cost in {{currency}} per second of video.',
   'Per image',
   'Audio requests',
   'Text-only requests',
@@ -392,6 +394,9 @@ export const STATIC_I18N_KEYS = [
   'No Sync',
   'Usage-based',
   'Per-call',
+  'Per Second',
+  'Per-second',
+  'per second',
   'Chinese',
   'English',
   'Japanese',

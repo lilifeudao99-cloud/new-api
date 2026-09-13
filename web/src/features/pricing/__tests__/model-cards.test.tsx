@@ -120,6 +120,45 @@ describe('model cards', () => {
     expect(screen.getByText('$0.01')).toBeVisible()
     expect(screen.queryByText('/ 1M')).not.toBeInTheDocument()
   })
+
+  it('shows fixed video prices per second', () => {
+    const model = pricingModel({
+      model_name: 'MiniMax-H3',
+      quota_type: 1,
+      model_price: 0.5,
+      supported_endpoint_types: ['openai-video'],
+    })
+    render(<ModelCard model={model} onClick={vi.fn()} tokenUnit='M' />)
+    expect(screen.getByText('$0.5')).toBeVisible()
+    expect(screen.getByText('/ second')).toBeVisible()
+    expect(screen.queryByText('/ request')).not.toBeInTheDocument()
+  })
+
+  it('keeps fixed-duration H3 aliases per request', () => {
+    const model = pricingModel({
+      model_name: 'Minimax-H3-768p-933-10s',
+      quota_type: 1,
+      model_price: 3,
+      supported_endpoint_types: ['openai-video'],
+    })
+    render(<ModelCard model={model} onClick={vi.fn()} />)
+    expect(screen.getByText('$3')).toBeVisible()
+    expect(screen.getByText('/ request')).toBeVisible()
+    expect(screen.queryByText('/ second')).not.toBeInTheDocument()
+  })
+
+  it('shows other fixed video prices per second', () => {
+    const model = pricingModel({
+      model_name: 'grok-video-3',
+      quota_type: 1,
+      model_price: 0.4,
+      supported_endpoint_types: ['openai-video'],
+    })
+    render(<ModelCard model={model} onClick={vi.fn()} />)
+    expect(screen.getByText('$0.4')).toBeVisible()
+    expect(screen.getByText('/ second')).toBeVisible()
+    expect(screen.queryByText('/ request')).not.toBeInTheDocument()
+  })
   it('updates the current time tier at a minute boundary and after returning to the page', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-07T08:59:59+08:00'))

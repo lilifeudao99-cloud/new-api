@@ -41,6 +41,173 @@ type responseTask struct {
 	} `json:"error,omitempty"`
 }
 
+func parseH3Duration(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case string:
+		v = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(v), "s"))
+		duration, _ := strconv.Atoi(v)
+		return duration
+	default:
+		return 0
+	}
+}
+
+// normalizeH3CreateBody applies the request shape expected by MiniMax-H3.
+// The legacy adaptor sends directly to the upstream, so this logic replaces
+// the former standalone compatibility proxy.
+func normalizeH3CreateBody(body []byte) ([]byte, error) {
+	var request map[string]any
+	if err := common.Unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+	if request["model"] != "MiniMax-H3" {
+		return body, nil
+	}
+
+	duration := parseH3Duration(request["duration"])
+	if duration <= 0 {
+		duration = parseH3Duration(request["seconds"])
+	}
+	if duration <= 0 {
+		duration = 4
+	}
+	if parseH3Duration(request["duration"]) != duration {
+		request["duration"] = duration
+	}
+	if _, ok := request["resolution"].(string); !ok {
+		request["resolution"] = "768P"
+	}
+	if _, ok := request["ratio"].(string); !ok {
+		ratio, _ := request["aspect_ratio"].(string)
+		if ratio == "" {
+			ratio = "16:9"
+		}
+		request["ratio"] = ratio
+	}
+	if _, exists := request["content"]; !exists {
+		prompt, _ := request["prompt"].(string)
+		request["content"] = []map[string]string{{"type": "text", "text": prompt}}
+	}
+	return common.Marshal(request)
+}
+
+func parseH3TaskResult(task *model.Task, body []byte) (*relaycommon.TaskInfo, bool, error) {
+	if task == nil || (task.Properties.UpstreamModelName != "MiniMax-H3" && task.Properties.OriginModelName != "MiniMax-H3") {
+		return nil, false, nil
+	}
+	var response map[string]any
+	if err := common.Unmarshal(body, &response); err != nil {
+		return nil, false, err
+	}
+	rawTask, ok := response["task"].(map[string]any)
+	if !ok {
+		return nil, false, nil
+	}
+
+	status, _ := rawTask["status"].(string)
+	switch status {
+	case "succeeded":
+		status = "completed"
+	case "running":
+		status = "in_progress"
+	}
+	result := &relaycommon.TaskInfo{}
+	switch status {
+	case "queued", "pending":
+		result.Status = model.TaskStatusQueued
+	case "processing", "in_progress":
+		result.Status = model.TaskStatusInProgress
+	case "completed", "success":
+		result.Status = model.TaskStatusSuccess
+	case "failed", "cancelled", "canceled":
+		result.Status = model.TaskStatusFailure
+	}
+	if result.Status == "" {
+		return result, true, nil
+	}
+	if result.Status == model.TaskStatusQueued {
+		result.Progress = ""
+	} else if result.Status == model.TaskStatusInProgress {
+		result.Progress = "30%"
+	} else {
+		result.Progress = "100%"
+	}
+	if result.Status == model.TaskStatusFailure {
+		if taskError, ok := rawTask["error"].(map[string]any); ok {
+			result.Reason, _ = taskError["message"].(string)
+		}
+	}
+	if videoURL, ok := response["video_url"].(string); ok {
+		result.Url = videoURL
+	}
+	if content, ok := rawTask["content"].(map[string]any); ok {
+		if videoURL, ok := content["url"].(string); ok && videoURL != "" {
+			result.Url = videoURL
+		}
+	}
+	return result, true, nil
+}
+
+func normalizeH3TaskResponse(task *model.Task, body []byte) ([]byte, bool, error) {
+	if task == nil || (task.Properties.UpstreamModelName != "MiniMax-H3" && task.Properties.OriginModelName != "MiniMax-H3") {
+		return body, false, nil
+	}
+	var response map[string]any
+	if err := common.Unmarshal(body, &response); err != nil {
+		return nil, false, err
+	}
+	rawTask, ok := response["task"].(map[string]any)
+	if !ok {
+		return body, false, nil
+	}
+	status, _ := rawTask["status"].(string)
+	switch status {
+	case "succeeded":
+		status = "completed"
+	case "running":
+		status = "in_progress"
+	}
+	progress := 0
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "canceled" {
+		progress = 100
+	} else if status == "in_progress" || status == "processing" {
+		progress = 30
+	}
+	normalized := map[string]any{
+		"id":           task.TaskID,
+		"task_id":      task.TaskID,
+		"object":       "video",
+		"model":        rawTask["model"],
+		"status":       status,
+		"progress":     progress,
+		"created_at":   rawTask["created_at"],
+		"completed_at": rawTask["updated_at"],
+	}
+	if videoURL, ok := response["video_url"].(string); ok && videoURL != "" {
+		normalized["url"] = videoURL
+		normalized["video_url"] = videoURL
+	}
+	if content, ok := rawTask["content"].(map[string]any); ok {
+		if videoURL, ok := content["url"].(string); ok && videoURL != "" {
+			normalized["url"] = videoURL
+			normalized["video_url"] = videoURL
+		}
+	}
+	if taskError, ok := rawTask["error"]; ok {
+		normalized["error"] = taskError
+	}
+	result, err := common.Marshal(normalized)
+	return result, true, err
+}
+
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.apiKey = info.ApiKey
 	a.baseURL = strings.TrimRight(info.ChannelBaseUrl, "/")
@@ -48,6 +215,34 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
 	return relaycommon.ValidateMultipartDirect(c, info)
+}
+
+// EstimateBilling applies per-second billing to legacy video models. The two
+// fixed-duration MiniMax aliases retain their per-request pricing.
+func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInfo) map[string]float64 {
+	if info == nil {
+		return nil
+	}
+	modelName := info.GetUpstreamModelName()
+	if modelName == "" {
+		modelName = info.OriginModelName
+	}
+	if modelName == "Minimax-H3-768p-933-10s" || modelName == "Minimax-H3-768p-933-15s" {
+		return nil
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return nil
+	}
+
+	seconds := parseH3Duration(req.Seconds)
+	if seconds <= 0 {
+		seconds = req.Duration
+	}
+	if seconds <= 0 {
+		seconds = 4
+	}
+	return map[string]float64{"seconds": float64(seconds)}
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -84,6 +279,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		encoded, err := common.Marshal(body)
 		if err != nil {
 			return nil, err
+		}
+		if info.UpstreamModelName == "MiniMax-H3" {
+			encoded, err = normalizeH3CreateBody(encoded)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return bytes.NewReader(encoded), nil
 	}
@@ -187,7 +388,10 @@ func (a *TaskAdaptor) FetchTask(_ string, key string, task *model.Task, proxy st
 	return client.Do(req)
 }
 
-func (a *TaskAdaptor) ParseTaskResult(_ *model.Task, _ *http.Response, body []byte) (*relaycommon.TaskInfo, error) {
+func (a *TaskAdaptor) ParseTaskResult(task *model.Task, _ *http.Response, body []byte) (*relaycommon.TaskInfo, error) {
+	if result, handled, err := parseH3TaskResult(task, body); handled {
+		return result, err
+	}
 	var parsed responseTask
 	if err := common.Unmarshal(body, &parsed); err != nil {
 		return nil, err
@@ -225,6 +429,12 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 		return nil, fmt.Errorf("task is nil")
 	}
 	if len(task.Data) > 0 {
+		if normalized, changed, err := normalizeH3TaskResponse(task, task.Data); changed {
+			if err != nil {
+				return nil, err
+			}
+			return normalized, nil
+		}
 		var response map[string]any
 		if err := common.Unmarshal(task.Data, &response); err == nil && response != nil {
 			response["id"] = task.TaskID

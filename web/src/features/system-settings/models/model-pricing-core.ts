@@ -76,7 +76,7 @@ export type ModelRatioData = {
 }
 
 export type PreviewRow = {
-  unit?: 'image' | 'none'
+  unit?: 'image' | 'second' | 'none'
   key: string
   label: string
   value: string
@@ -228,7 +228,8 @@ export function buildPreviewRows(
   t: (key: string) => string,
   currency: PricingCurrency = USD_PRICING_CURRENCY,
   cacheWriteMode?: CacheWriteMode,
-  billingDetails?: LegacyBillingDetails
+  billingDetails?: LegacyBillingDetails,
+  isVideoModel = false
 ): PreviewRow[] {
   if (mode === 'tiered_expr') {
     const effectiveExpr = combineBillingExpr(billingExpr, requestRuleExpr)
@@ -244,13 +245,21 @@ export function buildPreviewRows(
   }
 
   if (mode === 'per-request') {
+    const isImagePrice = Boolean(billingDetails?.image_count) && !isVideoModel
+    const priceLabel = isImagePrice
+      ? t('Price per image')
+      : t(isVideoModel ? 'Price per second' : 'Fixed price')
+    let priceUnit: 'image' | 'second' | undefined
+    if (isImagePrice) {
+      priceUnit = 'image'
+    } else if (isVideoModel) {
+      priceUnit = 'second'
+    }
     return [
       {
         key: 'price',
-        label: billingDetails?.image_count
-          ? t('Price per image')
-          : t('Fixed price'),
-        ...(billingDetails?.image_count ? { unit: 'image' as const } : {}),
+        label: priceLabel,
+        ...(priceUnit ? { unit: priceUnit } : {}),
         value: values.price
           ? formatPricingAmount(values.price, currency)
           : t('Empty'),
