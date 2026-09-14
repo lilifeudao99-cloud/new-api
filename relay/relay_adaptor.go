@@ -208,9 +208,9 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 // declarative or shared-endpoint router. Legacy task routes are pinned here
 // from one registry generation before the adaptor is returned.
 func getTaskAdaptorForRequest(c *gin.Context, platform constant.TaskPlatform) (constant.TaskPlatform, channel.TaskAdaptor) {
-	// Only Sora video models use the task plugin on the shared endpoint. Check
-	// this before pinned plugin state so other video models cannot be claimed by
-	// Sora or another shared video plugin.
+	// Only declared task-plugin video models use a plugin on the shared endpoint.
+	// Check this before pinned plugin state so legacy video models cannot be
+	// claimed by a shared video plugin.
 	if isLegacyOpenAIVideoRequest(c) {
 		return taskPlatformGrokLegacy, &legacytask.TaskAdaptor{}
 	}
@@ -268,7 +268,7 @@ func isLegacyOpenAIVideoRequest(c *gin.Context) bool {
 	}
 	visited := map[string]bool{}
 	for i := 0; i < 32 && modelName != "" && !visited[modelName]; i++ {
-		if common.IsSoraVideoModel(modelName) {
+		if common.IsTaskPluginVideoModel(modelName) {
 			return false
 		}
 		visited[modelName] = true

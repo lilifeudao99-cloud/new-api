@@ -857,6 +857,28 @@ func TestPrepareTaskPluginEndpointAcceptsRegisteredVideoMultipartBody(t *testing
 	assert.Equal(t, http.StatusNoContent, recorder.Code)
 }
 
+func TestPinTaskPluginEndpointClaimsWan3VideoModels(t *testing.T) {
+	for _, modelName := range []string{"wan3.0-video", "wan3.0-video-prime"} {
+		t.Run(modelName, func(t *testing.T) {
+			var pinned jsplugin.PinnedEndpoint
+			router := gin.New()
+			router.POST("/v1/videos", PinTaskPluginEndpoint(), func(c *gin.Context) {
+				pinned = c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint)
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{"model":"`+modelName+`"}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assert.Equal(t, http.StatusNoContent, recorder.Code)
+			require.NotNil(t, pinned.Plugin)
+			assert.Equal(t, "alibaba", pinned.Plugin.Meta.Key)
+		})
+	}
+}
+
 func TestVideoGenerationsIsNotClaimedByOpenAIVideoProtocol(t *testing.T) {
 	const key = "endpoint-video-gen-test"
 	_, err := jsplugin.DefaultRegistry.Register(taskProtocolPluginSource(

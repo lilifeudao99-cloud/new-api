@@ -147,13 +147,17 @@ func TestGetTaskAdaptorForRequestUsesLegacyAdaptorForNonSoraVideo(t *testing.T) 
 	assert.IsType(t, &legacytask.TaskAdaptor{}, adaptor)
 }
 
-func TestGetTaskAdaptorForRequestKeepsSoraPlugin(t *testing.T) {
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
-	c.Set("original_model", "sora-2")
+func TestGetTaskAdaptorForRequestKeepsTaskPluginVideoModels(t *testing.T) {
+	for _, modelName := range []string{"sora-2", "wan3.0-video", "wan3.0-video-prime"} {
+		t.Run(modelName, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			c.Set("original_model", modelName)
 
-	platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
+			platform, adaptor := getTaskAdaptorForRequest(c, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)))
 
-	assert.Equal(t, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)), platform)
-	assert.IsType(t, &jspluginadaptor.TaskAdaptor{}, adaptor)
+			assert.Equal(t, constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeOpenAI)), platform)
+			assert.IsType(t, &jspluginadaptor.TaskAdaptor{}, adaptor)
+		})
+	}
 }

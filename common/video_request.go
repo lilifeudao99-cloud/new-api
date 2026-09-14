@@ -10,12 +10,12 @@ const (
 	GrokVideoBillingModelPrefix = GrokVideoModel + "-billing-"
 )
 
-// IsSoraVideoModel identifies the only models that use the Sora task plugin
-// on the shared OpenAI Video endpoint. All other video models use the legacy
+// IsTaskPluginVideoModel identifies models served by a task plugin on the
+// shared OpenAI Video endpoint. All other video models use the legacy
 // OpenAI-compatible task adaptor.
-func IsSoraVideoModel(model string) bool {
+func IsTaskPluginVideoModel(model string) bool {
 	switch strings.TrimSpace(model) {
-	case "sora-2", "sora-2-pro":
+	case "sora-2", "sora-2-pro", "wan3.0-video", "wan3.0-video-prime":
 		return true
 	default:
 		return false
