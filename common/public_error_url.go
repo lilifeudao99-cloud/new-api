@@ -6,9 +6,13 @@ import (
 	"strings"
 )
 
-var absoluteHTTPURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+var (
+	absoluteHTTPURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	upstreamBrandPattern   = regexp.MustCompile(`(?i)pokeapi`)
+)
 
 func RewriteExternalErrorURLs(message, requestHost, requestScheme string) string {
+	message = upstreamBrandPattern.ReplaceAllString(message, "AIlili API")
 	host := strings.TrimSpace(requestHost)
 	if host == "" {
 		host = "ailili.chat"
