@@ -20,6 +20,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTaskSubmitAcceptsAnySuccessfulHTTPStatus(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusCreated, http.StatusAccepted, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			assert.True(t, isSuccessfulTaskSubmitStatus(status))
+		})
+	}
+	for _, status := range []int{http.StatusMultipleChoices, http.StatusBadRequest, http.StatusBadGateway} {
+		t.Run(http.StatusText(status)+"_rejected", func(t *testing.T) {
+			assert.False(t, isSuccessfulTaskSubmitStatus(status))
+		})
+	}
+}
+
 func TestTaskModel2DtoNormalizesLegacyAction(t *testing.T) {
 	task := &model.Task{Action: "firstTailGenerate"}
 

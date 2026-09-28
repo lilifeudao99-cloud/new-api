@@ -38,6 +38,10 @@ type TaskSubmitResult struct {
 	//PerCallPrice   types.PriceData
 }
 
+func isSuccessfulTaskSubmitStatus(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices
+}
+
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
 // 查找原始任务、从中提取模型名称、将渠道锁定到原始任务的渠道
 // （通过 info.LockedChannel，重试时复用同一渠道并轮换 key），
@@ -353,7 +357,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapperLocal(errors.New("upstream returned an empty response"), "fail_to_fetch_task", http.StatusBadGateway)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	// Task providers commonly return 202 Accepted (or 201 Created) when an
+	// asynchronous job has been accepted.  The adaptor still validates the
+	// response body and requires a task ID below, so every 2xx status is a
+	// successful submission while malformed 2xx responses remain errors.
+	if !isSuccessfulTaskSubmitStatus(resp.StatusCode) {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
