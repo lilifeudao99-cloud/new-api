@@ -11,6 +11,10 @@ func TestIsTaskPluginVideoModel(t *testing.T) {
 		{model: "sora-2-pro", want: true},
 		{model: "wan3.0-video", want: true},
 		{model: "wan3.0-video-prime", want: true},
+		{model: "seedance-2.0", want: true},
+		{model: "seedance-2.0-fast", want: true},
+		{model: "seedance-2.0-mini", want: true},
+		{model: "seedance-2.5", want: true},
 		{model: "grok-imagine-video", want: false},
 		{model: "MiniMax-H3", want: false},
 	} {
