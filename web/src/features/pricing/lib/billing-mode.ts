@@ -30,8 +30,20 @@ export type BillingModeLabelKey =
 export function getBillingModeLabelKey(
   model: PricingModel
 ): BillingModeLabelKey {
-  // Task-usage models badge as one business category; the metering unit
-  // ($/1M token, $/credit, $/second) is already carried by the price line.
+  // Video generation is asynchronous, but its customer-facing meter is time.
+  // Prefer the more useful per-second label when the video task has usage data.
+  const hasSecondBasedVideoUsage = Object.values(
+    model.billing_usage_schema || {}
+  ).some((field) => field.type === 'number' && field.unit === 'second')
+  if (
+    hasTaskUsageSchema(model) &&
+    hasSecondBasedVideoUsage &&
+    isPerSecondVideoModel(model)
+  ) {
+    return 'Per Second'
+  }
+  // Other task-usage models badge as one business category; their metering
+  // unit ($/1M token, $/credit, etc.) is carried by the price line.
   if (hasTaskUsageSchema(model)) return 'Task billing'
   if (isDynamicPricingModel(model)) return 'Dynamic Pricing'
   if (isTokenBasedModel(model)) return 'Token-based'

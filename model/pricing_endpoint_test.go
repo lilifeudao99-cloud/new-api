@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	_ "github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,21 @@ func TestPricingNativeChannelEndpointTypesUnchanged(t *testing.T) {
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeOpenAI}, byModel["gpt-4o"])
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeGemini, constant.EndpointTypeOpenAI}, byModel["gemini-2.5-flash"])
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeAnthropic, constant.EndpointTypeOpenAI}, byModel["claude-3-5-sonnet"])
+}
+
+func TestPricingTaskVideoPluginUsesOpenAIVideoEndpoint(t *testing.T) {
+	resetPricingEndpointTestTables(t)
+
+	insertPricingEndpointChannel(t, 204, constant.ChannelTypeTaskPlugin, dto.ChannelOtherSettings{})
+	insertPricingEndpointAbility(t, 204, "seedance-2.5")
+
+	byModel := pricingEndpointTypesByModel(t)
+
+	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeOpenAIVideo}, byModel["seedance-2.5"])
+	info, ok := common.GetDefaultEndpointInfo(constant.EndpointTypeOpenAIVideo)
+	require.True(t, ok)
+	assert.Equal(t, "/v1/videos", info.Path)
+	assert.Equal(t, "POST", info.Method)
 }
 
 func TestInitChannelCacheInvalidatesPricingCache(t *testing.T) {

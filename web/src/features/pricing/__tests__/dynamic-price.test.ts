@@ -404,6 +404,40 @@ describe('task dynamic pricing', () => {
     )
   })
 
+  test('labels task-based Seedance video models as per-second billing', () => {
+    assert.equal(
+      getBillingModeLabelKey(
+        pricingModel({
+          model_name: 'seedance-2.5',
+          billing_mode: 'tiered_expr',
+          billing_expr: 'tier("720p", u("seconds") * 1.12)',
+          billing_usage_schema: {
+            seconds: { type: 'number', unit: 'second' },
+          },
+          supported_endpoint_types: ['openai-video'],
+        })
+      ),
+      'Per Second'
+    )
+  })
+
+  test('keeps fixed-price video tasks labeled as task billing without a seconds meter', () => {
+    assert.equal(
+      getBillingModeLabelKey(
+        pricingModel({
+          model_name: 'seedance-fixed-task',
+          billing_mode: 'tiered_expr',
+          billing_expr: 'tier("fixed", 2)',
+          billing_usage_schema: {
+            task_count: { type: 'number', unit: 'count' },
+          },
+          supported_endpoint_types: ['openai-video'],
+        })
+      ),
+      'Task billing'
+    )
+  })
+
   test('labels task token usage prices without changing chat token units', () => {
     const model = pricingModel({
       billing_mode: 'tiered_expr',

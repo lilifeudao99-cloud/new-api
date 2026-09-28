@@ -121,6 +121,15 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 }
 
 func getPricingEndpointTypesForAbility(ability AbilityWithChannel, advancedCustomConfigs map[int]*dto.AdvancedCustomConfig) []constant.EndpointType {
+	if ability.ChannelType == constant.ChannelTypeTaskPlugin {
+		if plugin, ok := jsplugin.DefaultRegistry.Generation().GetByModel(ability.Model); ok {
+			for _, protocol := range plugin.Meta.Protocols {
+				if protocol.Name == "openai_video" {
+					return []constant.EndpointType{constant.EndpointTypeOpenAIVideo}
+				}
+			}
+		}
+	}
 	if ability.ChannelType != constant.ChannelTypeAdvancedCustom {
 		return common.GetEndpointTypesByChannelType(ability.ChannelType, ability.Model)
 	}
