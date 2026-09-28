@@ -1,13 +1,56 @@
+function seedanceUsageProfile(models, resolutions) {
+  const allResolutionLabels = {
+    "480p": { en: "480p", zh: "480P" },
+    "720p": { en: "720p", zh: "720P" },
+    "1080p": { en: "1080p", zh: "1080P" },
+    "4k": { en: "4K", zh: "4K" },
+  };
+  const resolutionLabels = {};
+  for (const resolution of resolutions) resolutionLabels[resolution] = allResolutionLabels[resolution];
+  return {
+    models: models,
+    schema: {
+      seconds: {
+        type: "number",
+        unit: "second",
+        description: { en: "Video generation unit price", zh: "视频生成单价" },
+      },
+      input_seconds: {
+        type: "number",
+        unit: "second",
+        description: { en: "Reference video generation unit price", zh: "参考视频生成单价" },
+      },
+      resolution: {
+        enum: resolutions,
+        enumLabels: resolutionLabels,
+        description: { en: "Output video resolution", zh: "输出视频分辨率" },
+      },
+      video_input: {
+        enum: ["none", "video"],
+        enumLabels: {
+          none: { en: "No reference video", zh: "无参考视频" },
+          video: { en: "With reference video", zh: "有参考视频" },
+        },
+        description: { en: "Reference video input", zh: "参考视频输入" },
+      },
+    },
+    examples: [
+      { label: resolutions[0] + " · 5s", facts: { seconds: 5, input_seconds: 0, resolution: resolutions[0], video_input: "none" } },
+      { label: resolutions[Math.min(1, resolutions.length - 1)] + " · 5s + 3s reference", facts: { seconds: 5, input_seconds: 3, resolution: resolutions[Math.min(1, resolutions.length - 1)], video_input: "video" } },
+    ],
+  };
+}
+
 export const meta = {
   apiVersion: 1,
   key: "doubao",
   name: "Doubao Video",
   icon: "Doubao.Color",
   description: {
-    en: "Volcengine Doubao Seedance video generation (text-to-video, image-to-video, and video-to-video)",
-    zh: "火山引擎豆包 Seedance 视频生成（文生视频、图生视频、视频生视频）",
+    en: "Doubao Seedance video generation with native Ark and OpenAI-compatible upstreams",
+    zh: "豆包 Seedance 视频生成，支持原生 Ark 与 OpenAI 兼容上游",
   },
-  version: "1.0.2",
+  version: "1.1.0",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: [
@@ -19,6 +62,10 @@ export const meta = {
     "doubao-seedance-2-0-fast-260128",
     "doubao-seedance-2-0-mini-260615",
     "doubao-seedance-2-5-260628",
+    "seedance-2.0",
+    "seedance-2.0-fast",
+    "seedance-2.0-mini",
+    "seedance-2.5",
   ],
   fetchMode: "per_task",
   usageSchema: {
@@ -55,6 +102,12 @@ export const meta = {
     { label: "4k · 5s", facts: { tokens: 972000, resolution: "4k", video_input: "none" } },
     { label: "720p · 10s", facts: { tokens: 216000, resolution: "720p", video_input: "none" } },
     { label: "720p · 5s (+4s 输入视频)", facts: { tokens: 194400, resolution: "720p", video_input: "video" } },
+  ],
+  usageProfiles: [
+    seedanceUsageProfile(["seedance-2.0"], ["480p", "720p", "1080p", "4k"]),
+    seedanceUsageProfile(["seedance-2.0-fast"], ["720p"]),
+    seedanceUsageProfile(["seedance-2.0-mini"], ["480p", "720p"]),
+    seedanceUsageProfile(["seedance-2.5"], ["480p", "720p", "1080p"]),
   ],
   routes: [
     { method: "POST", path: "/doubao/api/v3/contents/generations/tasks", type: "submit", decode: "createTask", render: "taskCreated" },
@@ -105,13 +158,93 @@ function rewriteDraftTaskContent(content, originTasks) {
 function normalizeResolution(value) {
   const raw = trimmed(value).toLowerCase();
   if (["480p", "720p", "1080p", "4k"].includes(raw)) return raw;
-  const parts = raw.replace("*", "x").split("x");
+  const parts = raw.replace(/\*/g, "x").split("x");
   if (parts.length !== 2) return "720p";
   const max = Math.max(Number(parts[0]), Number(parts[1]));
   if (max >= 3840) return "4k";
   if (max >= 1920) return "1080p";
   if (max >= 1280) return "720p";
   return "480p";
+}
+
+function xinfengSupportedResolutions(model) {
+  switch (trimmed(model)) {
+    case "seedance-2.0-fast":
+      return ["720p"];
+    case "seedance-2.0-mini":
+      return ["480p", "720p"];
+    case "seedance-2.5":
+      return ["480p", "720p", "1080p"];
+    case "seedance-2.0":
+      return ["480p", "720p", "1080p", "4k"];
+    default:
+      return [];
+  }
+}
+
+function canonicalXinfengResolution(value) {
+  const raw = trimmed(value).toLowerCase();
+  if (["480p", "720p", "1080p", "4k"].includes(raw)) return raw;
+  const parts = raw.replace(/\*/g, "x").split("x");
+  if (parts.length !== 2 || parts.some((part) => !/^\d+(?:\.\d+)?$/.test(part) || Number(part) <= 0)) return "";
+  return normalizeResolution(raw);
+}
+
+function validateXinfengResolution(req, model) {
+  if (!isXinfengSeedanceModel(model)) return;
+  for (const requested of [req.resolution, req.size]) {
+    if (requested === undefined || trimmed(requested) === "") continue;
+    const resolution = canonicalXinfengResolution(requested);
+    if (!xinfengSupportedResolutions(model).includes(resolution)) {
+      throw new Error("unsupported resolution for " + trimmed(model));
+    }
+  }
+}
+
+function isXinfengSeedanceModel(model) {
+  return ["seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5"].includes(trimmed(model));
+}
+
+function isVideoReferenceValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return isVideoReferenceValue(value.url || value.video_url || value.uri);
+  const raw = trimmed(value).toLowerCase();
+  return raw.startsWith("data:video/") || /\.(?:mp4|webm|mov|m4v)(?:$|[?#])/.test(raw);
+}
+
+function hasReferenceInput(req, ctx) {
+  if (trimmed(req.input_reference) || trimmed(req.input_video) || trimmed(req.video)) return true;
+  return (ctx && Array.isArray(ctx.files) && ctx.files.some((file) => file && ["input_reference", "input_video", "video"].includes(file.field))) || false;
+}
+
+function hasReferenceVideo(req, ctx) {
+  if (trimmed(req.input_video) || trimmed(req.video)) return true;
+  if (isVideoReferenceValue(req.input_reference)) return true;
+  return (ctx && Array.isArray(ctx.files) && ctx.files.some((file) => {
+    if (!file || !["input_reference", "input_video", "video"].includes(file.field)) return false;
+    return String(file.mimeType || "").toLowerCase().startsWith("video/") || isVideoReferenceValue(file.filename);
+  })) || false;
+}
+
+function referenceVideoSeconds(req, ctx) {
+  for (const value of [req.input_seconds, req.reference_video_duration, req.input_reference_duration, ctx && ctx.inputVideoSeconds]) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds, 3600);
+  }
+  return 0;
+}
+
+function normalizeXinfengRequest(req, ctx, model) {
+  const body = Object.assign({}, req || {});
+  body.model = model;
+  validateXinfengResolution(body, model);
+  if (body.resolution !== undefined) body.size = normalizeResolution(body.resolution);
+  if (body.size !== undefined) body.size = normalizeResolution(body.size);
+  // These fields are gateway billing hints, not OpenAI video request fields.
+  delete body.resolution;
+  delete body.reference_video_duration;
+  delete body.input_reference_duration;
+  delete body.input_seconds;
+  return body;
 }
 
 function hasVideo(content) {
@@ -248,6 +381,38 @@ export const native = {
 
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody;
+  const model = ctx.upstreamModel || req.model || ctx.model;
+  if (isXinfengSeedanceModel(model)) {
+    const values = normalizeXinfengRequest(req, ctx, model);
+    const headers = { Authorization: "Bearer " + ctx.apiKey };
+    if ((ctx.files || []).length) {
+      const parts = [];
+      for (const key of Object.keys(values)) {
+        if (key === "metadata" || values[key] === undefined || values[key] === null || typeof values[key] === "object") continue;
+        parts.push({ name: key, value: values[key] });
+      }
+      if (values.metadata && typeof values.metadata === "object" && !Array.isArray(values.metadata)) {
+        parts.push({ name: "metadata", value: JSON.stringify(values.metadata) });
+      }
+      for (const file of ctx.files) parts.push({ name: file.field, fileRef: file.ref, filename: file.filename });
+      return {
+        url: ctx.baseUrl + "/v1/videos",
+        method: "POST",
+        headers,
+        bodyType: "multipart",
+        parts,
+        action: hasReferenceInput(values, ctx) ? "image_to_video" : "text_to_video",
+      };
+    }
+    headers["Content-Type"] = "application/json";
+    return {
+      url: ctx.baseUrl + "/v1/videos",
+      method: "POST",
+      headers,
+      body: values,
+      action: hasReferenceInput(values, ctx) ? "image_to_video" : "text_to_video",
+    };
+  }
   const metadata = req.metadata || {};
   const body = Object.assign({ model: req.model || "", content: [] }, metadata);
   const imageContent = [];
@@ -272,12 +437,30 @@ export function buildSubmitRequest(ctx) {
 }
 
 export function parseSubmitResponse(ctx, resp) {
+  if (isXinfengSeedanceModel(ctx.upstreamModel || ctx.model)) {
+    const body = resp.body || {};
+    const taskId = body.id || body.task_id;
+    if (!taskId) throw new Error("task_id is empty");
+    return { taskId, taskData: body };
+  }
   if (!resp.body || !resp.body.id) throw new Error("task_id is empty");
   return { taskId: resp.body.id, taskData: resp.body };
 }
 
 export function extractUsage(ctx) {
   const req = ctx.requestBody || {};
+  const model = ctx.upstreamModel || ctx.model;
+  if (isXinfengSeedanceModel(model)) {
+    let seconds = Number(req.seconds || req.duration || 4);
+    if (!Number.isFinite(seconds) || seconds <= 0) seconds = 4;
+    const videoInput = hasReferenceVideo(req, ctx);
+    return {
+      seconds: Math.min(seconds, 3600),
+      input_seconds: videoInput ? referenceVideoSeconds(req, ctx) : 0,
+      resolution: normalizeResolution(req.resolution || req.size || "720p"),
+      video_input: videoInput ? "video" : "none",
+    };
+  }
   const metadata = req.metadata || {};
   if (ctx.usagePurpose === "billing_ratios") {
     const ratio = videoInputRatio(ctx.upstreamModel || ctx.model, metadata.resolution, metadata.content);
@@ -302,6 +485,9 @@ export function extractUsage(ctx) {
 }
 
 export function buildQueryRequest(ctx) {
+  if (isXinfengSeedanceModel(ctx.upstreamModel || ctx.model)) {
+    return { url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.taskId), method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
+  }
   return {
     url: ctx.baseUrl + "/api/v3/contents/generations/tasks/" + ctx.taskId,
     method: "GET",
@@ -310,6 +496,21 @@ export function buildQueryRequest(ctx) {
 }
 
 export function parseTaskResult(ctx, body) {
+  if (isXinfengSeedanceModel(ctx.upstreamModel || ctx.model)) {
+    const statuses = { queued: "QUEUED", pending: "QUEUED", processing: "IN_PROGRESS", in_progress: "IN_PROGRESS", completed: "SUCCESS", succeeded: "SUCCESS", failed: "FAILURE", cancelled: "FAILURE" };
+    const rawStatus = trimmed(body.status).toLowerCase();
+    const mapped = statuses[rawStatus];
+    const result = { status: mapped || "UNKNOWN" };
+    if (result.status === "SUCCESS") {
+      const content = body.content || {};
+      result.url = body.video_url || content.video_url || content.url || body.url || "";
+    }
+    if (!mapped) result.reason = "unrecognized status: " + String(body.status || "");
+    if (result.status === "FAILURE") result.reason = body.error && body.error.message ? body.error.message : "task failed";
+    const progress = Number(String(body.progress === undefined ? "" : body.progress).replace("%", ""));
+    if (Number.isFinite(progress) && progress > 0 && progress < 100) result.progress = progress + "%";
+    return result;
+  }
   if (body.status === "pending" || body.status === "queued") return { status: "QUEUED", progress: "10%" };
   if (body.status === "processing" || body.status === "running") return { status: "IN_PROGRESS", progress: "50%" };
   if (body.status === "succeeded") {
@@ -336,6 +537,9 @@ function artifactData(ctx) {
 
 export function listArtifacts(task) {
   if (task.status !== "SUCCESS") return [];
+  const data = task.data && typeof task.data === "object" && !Array.isArray(task.data) ? task.data : {};
+  const model = trimmed(data.model || data.upstream_model || data.upstreamModel);
+  if (isXinfengSeedanceModel(model)) return [{ key: "video", type: "video" }];
   const content = artifactData(task).content || {};
   const artifacts = [];
   if (trimmed(content.video_url)) artifacts.push({ key: "video", type: "video" });
@@ -344,6 +548,10 @@ export function listArtifacts(task) {
 }
 
 export function buildContentRequest(ctx) {
+  if (isXinfengSeedanceModel(ctx.upstreamModel || ctx.model)) {
+    if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
+    return { url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content", method: ctx.clientRequest.method, headers: { Authorization: "Bearer " + ctx.apiKey } };
+  }
   const content = artifactData(ctx).content || {};
   const urls = { video: content.video_url, last_frame: content.last_frame_url };
   const url = trimmed(urls[ctx.artifactKey]);
@@ -352,6 +560,21 @@ export function buildContentRequest(ctx) {
 }
 
 export function extractUsageOnComplete(task, taskResult, body) {
+  const model = trimmed(task && (task.upstreamModel || task.model));
+  if (isXinfengSeedanceModel(model)) {
+    const source = body || {};
+    const facts = {};
+    const usage = source.usage && typeof source.usage === "object" ? source.usage : {};
+    const seconds = Number(source.seconds || source.duration || source.output_seconds || usage.seconds || usage.output_seconds || 0);
+    if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
+    if (source.resolution !== undefined || source.size !== undefined) facts.resolution = normalizeResolution(source.resolution || source.size);
+    const inputSeconds = Number(source.input_seconds === undefined ? usage.input_seconds : source.input_seconds);
+    if (Number.isFinite(inputSeconds) && inputSeconds > 0) {
+      facts.input_seconds = Math.min(inputSeconds, 3600);
+      facts.video_input = "video";
+    }
+    return facts;
+  }
   if (!body || body.status !== "succeeded") return {};
   const facts = {};
   const usage = body.usage || {};
@@ -376,6 +599,7 @@ export const protocols = {
       if (req.images !== undefined && !Array.isArray(req.images)) throw new Error("images must be an array");
       if (req.metadata !== undefined && (!req.metadata || typeof req.metadata !== "object" || Array.isArray(req.metadata)))
         throw new Error("metadata must be an object");
+      validateXinfengResolution(req, model);
       const input = responsesInput(req);
       const prompt = input.prompt || trimmed(req.prompt);
       const images = [];
@@ -391,6 +615,9 @@ export const protocols = {
       if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.seconds = req.seconds;
       else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.seconds = req.duration;
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
+      if (Object.prototype.hasOwnProperty.call(req, "resolution")) requestBody.resolution = req.resolution;
+      if (Object.prototype.hasOwnProperty.call(req, "reference_video_duration")) requestBody.reference_video_duration = req.reference_video_duration;
+      if (Object.prototype.hasOwnProperty.call(req, "input_seconds")) requestBody.input_seconds = req.input_seconds;
       const intent = { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
       const originTaskIds = draftTaskIds(metadata.content);
       if (originTaskIds.length) intent.originTaskIds = originTaskIds;
@@ -453,13 +680,18 @@ protocols.openai_video = {
     if (ctx.body.kind === "json") {
       if (!ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
       const req = ctx.body.value;
+      validateXinfengResolution(req, ctx.model);
       const seconds = req.seconds === undefined ? req.duration : req.seconds;
       if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
         throw new Error("seconds must be between 1 and 3600");
+      for (const name of ["reference_video_duration", "input_seconds"]) {
+        if (req[name] !== undefined && (!Number.isFinite(Number(req[name])) || Number(req[name]) < 0 || Number(req[name]) > 3600))
+          throw new Error(name + " must be between 0 and 3600");
+      }
       return {
         kind: "submit",
         model: ctx.model,
-        action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+        action: req.input_reference || req.input_video || req.video || req.image ? "image_to_video" : "text_to_video",
         requestBody: Object.assign({}, req, { model: ctx.model }),
       };
     }
@@ -483,16 +715,21 @@ protocols.openai_video = {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("metadata must be a JSON object string");
       req.metadata = parsed;
     }
-    if ((ctx.body.files || []).length) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
+    if ((ctx.body.files || []).length && !isXinfengSeedanceModel(ctx.model)) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
     if (req.seconds !== undefined) req.seconds = Number(req.seconds);
     else if (req.duration !== undefined) req.seconds = Number(req.duration);
+    for (const name of ["reference_video_duration", "input_seconds"]) {
+      if (req[name] !== undefined) req[name] = Number(req[name]);
+      if (req[name] !== undefined && (!Number.isFinite(req[name]) || req[name] < 0 || req[name] > 3600)) throw new Error(name + " must be between 0 and 3600");
+    }
+    validateXinfengResolution(req, ctx.model);
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
       throw new Error("seconds must be between 1 and 3600");
     return {
       kind: "submit",
       model: ctx.model,
-      action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+      action: (ctx.body.files || []).length || req.input_reference || req.input_video || req.video || req.image ? "image_to_video" : "text_to_video",
       requestBody: Object.assign({}, req, { model: ctx.model }),
     };
   },

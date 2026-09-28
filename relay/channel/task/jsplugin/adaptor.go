@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -1267,6 +1268,7 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 	}
 	requestHeaders := map[string]string{}
 	files := make([]map[string]any, 0)
+	inputVideoSeconds := 0.0
 	if a.routeRequest != nil {
 		routeRequest = *a.routeRequest
 		requestHeaders = make(map[string]string, len(a.requestHeaders))
@@ -1311,6 +1313,24 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 					for field, headers := range form.File {
 						for _, header := range headers {
 							files = append(files, map[string]any{"ref": "request_file:" + field, "field": field, "filename": header.Filename, "mimeType": header.Header.Get("Content-Type"), "size": header.Size})
+							if inputVideoSeconds == 0 && (field == "input_reference" || field == "input_video" || field == "video") {
+								ext := strings.ToLower(path.Ext(header.Filename))
+								if ext == ".mov" || ext == ".m4v" {
+									ext = ".mp4"
+								}
+								if ext == "" && strings.Contains(strings.ToLower(header.Header.Get("Content-Type")), "mp4") {
+									ext = ".mp4"
+								}
+								if ext == ".mp4" || ext == ".webm" {
+									if videoFile, openErr := header.Open(); openErr == nil {
+										duration, durationErr := common.GetAudioDuration(context.Background(), videoFile, ext)
+										videoFile.Close()
+										if durationErr == nil && duration > 0 && duration <= relaycommon.MaxTaskDurationSeconds {
+											inputVideoSeconds = duration
+										}
+									}
+								}
+							}
 						}
 					}
 				}
@@ -1326,6 +1346,9 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 	ctx["requestBody"] = jsonValue(routeRequest.RequestBody)
 	ctx["requestHeaders"] = requestHeaders
 	ctx["files"] = files
+	if inputVideoSeconds > 0 {
+		ctx["inputVideoSeconds"] = inputVideoSeconds
+	}
 	ctx["action"] = info.Action
 	ctx["originTaskId"] = info.OriginTaskID
 	if info.TaskRelayInfo != nil && len(info.OriginTasks) > 0 {

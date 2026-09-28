@@ -266,7 +266,7 @@ protocols.openai_video = {
       return {
         kind: "submit",
         model: ctx.model,
-        action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
+        action: req.input_reference || req.input_video || req.video || req.image ? "image_to_video" : "text_to_video",
         requestBody: Object.assign({}, req, { model: ctx.model }),
       };
     }
@@ -304,7 +304,7 @@ protocols.openai_video = {
     return {
       kind: "submit",
       model: ctx.model,
-      action: hasInputReferenceFile || req.input_reference || req.image ? "image_to_video" : "text_to_video",
+      action: hasInputReferenceFile || req.input_reference || req.input_video || req.video || req.image ? "image_to_video" : "text_to_video",
       requestBody: Object.assign({}, req, { model: ctx.model }),
     };
   },
