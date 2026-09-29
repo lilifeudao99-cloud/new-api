@@ -89,6 +89,33 @@ export function buildSubmitRequest(){return {}} export function parseSubmitRespo
 	assert.JSONEq(t, `{"seconds":5}`, recorder.Header().Get("X-New-Api-Other-Ratios"))
 }
 
+func TestTaskPromptForLogPreservesOnlyTopLevelPrompt(t *testing.T) {
+	t.Run("typed task request", func(t *testing.T) {
+		c := taskSubmissionTestContext()
+		c.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "  a quiet forest  "})
+		assert.Equal(t, "a quiet forest", taskPromptForLog(c))
+	})
+
+	t.Run("plugin request body", func(t *testing.T) {
+		c := taskSubmissionTestContext()
+		c.Set("task_request", map[string]any{"prompt": "a cinematic sunrise", "api_key": "not-saved"})
+		assert.Equal(t, "a cinematic sunrise", taskPromptForLog(c))
+	})
+
+	t.Run("ignores non-string prompts", func(t *testing.T) {
+		c := taskSubmissionTestContext()
+		c.Set("task_request", map[string]any{"prompt": []any{"not", "a", "string"}})
+		assert.Empty(t, taskPromptForLog(c))
+	})
+
+	t.Run("preserves long prompt", func(t *testing.T) {
+		c := taskSubmissionTestContext()
+		prompt := strings.Repeat("界", 5000)
+		c.Set("task_request", map[string]any{"prompt": prompt})
+		assert.Equal(t, prompt, taskPromptForLog(c))
+	})
+}
+
 func TestPresentTaskSubmissionFallbackUsesPersistedPublicID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)

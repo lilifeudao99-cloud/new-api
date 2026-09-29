@@ -1001,6 +1001,10 @@ func taskArtifactContext(task *model.Task) (map[string]any, error) {
 	if task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil {
 		producerVersion = task.PrivateData.Execution.TaskPlugin.Version
 	}
+	upstreamModel := task.Properties.UpstreamModelName
+	if upstreamModel == "" {
+		upstreamModel = task.Properties.OriginModelName
+	}
 	var state any
 	if len(task.PrivateData.PluginState) > 0 {
 		if err := common.Unmarshal(task.PrivateData.PluginState, &state); err != nil {
@@ -1009,8 +1013,11 @@ func taskArtifactContext(task *model.Task) (map[string]any, error) {
 	}
 	return map[string]any{
 		"taskId":          task.TaskID,
+		"publicTaskId":    task.TaskID,
 		"status":          string(task.Status),
 		"action":          task.Action,
+		"model":           task.Properties.OriginModelName,
+		"upstreamModel":   upstreamModel,
 		"data":            data,
 		"state":           state,
 		"producerVersion": producerVersion,

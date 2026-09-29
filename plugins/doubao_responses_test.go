@@ -128,8 +128,14 @@ func TestDoubaoSeedanceOpenAIVideoProfile(t *testing.T) {
 	require.NotContains(t, descriptorBody, "reference_video_duration")
 
 	artifactsValue, err := plugin.Engine.Call(t.Context(), "listArtifacts", map[string]any{
-		"status": "SUCCESS",
-		"data":   map[string]any{"model": "seedance-2.0", "status": "completed"},
+		"status":        "SUCCESS",
+		"model":         "seedance-2.0",
+		"upstreamModel": "seedance-2.0",
+		"data": map[string]any{
+			"id": "upstream-task", "status": "completed",
+			"url":         "https://xinfeng.example/v1/videos/upstream-task",
+			"content_url": "https://xinfeng.example/v1/videos/upstream-task/content",
+		},
 	})
 	require.NoError(t, err)
 	artifactsBytes, err := common.Marshal(artifactsValue)
@@ -138,6 +144,22 @@ func TestDoubaoSeedanceOpenAIVideoProfile(t *testing.T) {
 	require.NoError(t, common.Unmarshal(artifactsBytes, &artifacts))
 	require.Len(t, artifacts, 1)
 	require.Equal(t, "video", artifacts[0]["key"])
+	contentRequestValue, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
+		"model": "seedance-2.0", "upstreamModel": "seedance-2.0",
+		"artifactKey": "video", "upstreamTaskId": "upstream-task",
+		"baseUrl": "https://xinfeng.example", "apiKey": "test-key",
+		"clientRequest": map[string]any{"method": "GET", "headers": map[string]string{}},
+		"data":          map[string]any{"id": "upstream-task", "status": "completed", "url": "https://xinfeng.example/v1/videos/upstream-task", "content_url": "https://xinfeng.example/v1/videos/upstream-task/content"},
+	})
+	require.NoError(t, err)
+	contentRequestBytes, err := common.Marshal(contentRequestValue)
+	require.NoError(t, err)
+	var contentRequest map[string]any
+	require.NoError(t, common.Unmarshal(contentRequestBytes, &contentRequest))
+	require.Equal(t, "https://xinfeng.example/v1/videos/upstream-task/content", contentRequest["url"])
+	contentRequestHeaders, ok := contentRequest["headers"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "Bearer test-key", contentRequestHeaders["Authorization"])
 
 	_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
 		"model": "seedance-2.0-fast",

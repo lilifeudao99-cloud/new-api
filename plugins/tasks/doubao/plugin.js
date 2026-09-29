@@ -538,7 +538,7 @@ function artifactData(ctx) {
 export function listArtifacts(task) {
   if (task.status !== "SUCCESS") return [];
   const data = task.data && typeof task.data === "object" && !Array.isArray(task.data) ? task.data : {};
-  const model = trimmed(data.model || data.upstream_model || data.upstreamModel);
+  const model = trimmed(task.upstreamModel || task.model || data.model || data.upstream_model || data.upstreamModel);
   if (isXinfengSeedanceModel(model)) return [{ key: "video", type: "video" }];
   const content = artifactData(task).content || {};
   const artifacts = [];

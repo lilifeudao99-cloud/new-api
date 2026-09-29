@@ -733,6 +733,7 @@ func executeTaskSubmissionWith(
 
 	stage = "insert"
 	task := model.InitTask(result.Platform, relayInfo)
+	task.Properties.Input = taskPromptForLog(c)
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource
@@ -791,6 +792,23 @@ func executeTaskSubmissionWith(
 	diagnostics.complete(task, result.Quota)
 
 	return &taskSubmissionOutcome{Result: result, Task: task, RelayInfo: relayInfo}, nil
+}
+
+func taskPromptForLog(c *gin.Context) string {
+	value, exists := c.Get("task_request")
+	if !exists {
+		return ""
+	}
+
+	var prompt string
+	switch request := value.(type) {
+	case relaycommon.TaskSubmitReq:
+		prompt = request.Prompt
+	case map[string]any:
+		prompt, _ = request["prompt"].(string)
+	}
+	prompt = strings.TrimSpace(prompt)
+	return prompt
 }
 
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {

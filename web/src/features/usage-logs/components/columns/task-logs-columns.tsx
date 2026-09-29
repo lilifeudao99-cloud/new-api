@@ -31,7 +31,10 @@ import { cn } from '@/lib/utils'
 
 import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
 import type { TaskLog } from '../../types'
+import { PromptDialog } from '../dialogs/prompt-dialog'
 import { TaskDetailsDialog } from '../dialogs/task-details-dialog'
+import { LogCostDisplay } from '../log-cost-display'
+import { ModelBadge } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
 import { TaskArtifactsCell } from '../task-artifacts'
 import { useUsageLogsContext } from '../usage-logs-provider'
@@ -75,6 +78,34 @@ function TaskDetailsCell(props: {
         log={props.log}
         isAdmin={props.isAdmin}
         isRoot={props.isRoot}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+      />
+    </>
+  )
+}
+
+function TaskPromptCell(props: { prompt?: string }) {
+  const { t } = useTranslation()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  if (!props.prompt) {
+    return <span className='text-muted-foreground/60 text-xs'>-</span>
+  }
+
+  return (
+    <>
+      <button
+        type='button'
+        className='group flex max-w-[220px] items-center text-left text-xs'
+        onClick={() => setDialogOpen(true)}
+        title={t('Click to view full prompt')}
+      >
+        <span className='text-muted-foreground truncate leading-snug group-hover:underline'>
+          {props.prompt}
+        </span>
+      </button>
+      <PromptDialog
+        prompt={props.prompt}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
       />
@@ -193,10 +224,64 @@ export function useTaskLogsColumns(
 
   columns.push(
     {
+      id: 'type',
+      header: t('Type'),
+      accessorFn: (row) => row.platform,
+      cell: ({ row }) => (
+        <div className='flex max-w-[150px] flex-col gap-1'>
+          <span className='truncate text-xs font-medium'>
+            {t(row.original.platform)}
+          </span>
+          <span className='text-muted-foreground truncate text-[11px]'>
+            {t(taskActionMapper.getLabel(row.original.action))}
+          </span>
+        </div>
+      ),
+      size: 120,
+      maxSize: 160,
+    },
+    {
+      id: 'model',
+      header: t('Model'),
+      accessorFn: (row) =>
+        row.properties?.origin_model_name ||
+        row.properties?.upstream_model_name ||
+        '',
+      cell: ({ row }) => {
+        const model =
+          row.original.properties?.origin_model_name ||
+          row.original.properties?.upstream_model_name
+        const actualModel = row.original.properties?.upstream_model_name
+        if (!model) {
+          return <span className='text-muted-foreground/60 text-xs'>-</span>
+        }
+        return (
+          <ModelBadge
+            modelName={model}
+            actualModel={
+              actualModel && actualModel !== model ? actualModel : undefined
+            }
+            className='max-w-[220px]'
+          />
+        )
+      },
+      size: 190,
+      maxSize: 240,
+    },
+    {
+      id: 'prompt',
+      header: t('Prompt'),
+      accessorFn: (row) => row.properties?.input || '',
+      cell: ({ row }) => (
+        <TaskPromptCell prompt={row.original.properties?.input} />
+      ),
+      size: 200,
+      maxSize: 240,
+    },
+    {
       accessorKey: 'task_id',
       header: t('Task ID'),
       cell: ({ row }) => {
-        const log = row.original
         const taskId = row.getValue('task_id') as string
         if (!taskId) {
           return <span className='text-muted-foreground/60 text-xs'>-</span>
@@ -210,9 +295,6 @@ export function useTaskLogsColumns(
               size='sm'
               className='border-border/60 bg-muted/30 !text-foreground max-w-full truncate rounded-md border px-1.5 py-0.5 font-mono'
             />
-            <span className='text-muted-foreground/60 truncate text-[11px]'>
-              {t(log.platform)} · {t(taskActionMapper.getLabel(log.action))}
-            </span>
           </div>
         )
       },
@@ -240,6 +322,15 @@ export function useTaskLogsColumns(
           />
         )
       },
+    },
+    {
+      accessorKey: 'quota',
+      header: t('Cost'),
+      cell: ({ row }) => (
+        <LogCostDisplay quota={row.original.quota} other={null} />
+      ),
+      size: 110,
+      maxSize: 140,
     },
     createProgressColumn<TaskLog>({ headerLabel: t('Progress') }),
     {

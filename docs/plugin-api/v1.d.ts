@@ -53,6 +53,8 @@ export interface RequestDescriptor {responseType?: "json" | "sse"; url: string; 
 export interface UpstreamResponse {statusCode: number; headers: Readonly<Record<string, readonly string[]>>; body: unknown}
 export interface NormalizedTaskResult {taskId?: string; status: "NOT_START" | "SUBMITTED" | "QUEUED" | "IN_PROGRESS" | "SUCCESS" | "FAILURE" | "UNKNOWN"; progress?: string; reason?: string; url?: string; remoteUrl?: string; completionTokens?: number; totalTokens?: number}
 export interface TaskArtifact {key: string; type: "video" | "audio" | "image" | "file"; mimeType?: string}
+export interface TaskArtifactView {taskId: string; publicTaskId: string; status: string; action: string; model: string; upstreamModel: string; data: unknown; state: unknown; producerVersion: string}
+export interface TaskArtifactContext extends TaskArtifactView {baseUrl: string; apiKey?: string; authHeader: string; auth?: unknown}
 export declare const meta: Meta;
 export declare const native: Record<string, ((ctx: NativeDecodeContext) => TaskIntent) | ((ctx: NativeDecodeContext, task: TaskView | readonly TaskView[]) => unknown)> & {error?: (ctx: NativeDecodeContext, error: {code: string; message: string; httpStatus: number; retryable: boolean}) => unknown};
 export declare const protocols: {
@@ -77,5 +79,5 @@ export declare function parseBatchResult(ctx: BatchQueryContext, body: unknown, 
 export declare function extractUsage(ctx: DriverContext & {usagePurpose?: "facts" | "billing_ratios"}): Readonly<Record<string, string | number | boolean>> | null;
 export declare function extractUsageOnSubmit(ctx: DriverContext, taskData: unknown): Readonly<Record<string, string | number | boolean>> | null;
 export declare function extractUsageOnComplete(task: TaskQueryContext, result: NormalizedTaskResult, data: unknown): Readonly<Record<string, string | number | boolean>> | null;
-export declare function listArtifacts(task: {taskId: string; status: string; action: string; data: unknown; producerVersion: string}): readonly TaskArtifact[];
-export declare function buildContentRequest(ctx: DriverContext & {artifactKey: string; data: unknown; state?: unknown; upstreamTaskId: string; clientRequest: {method: "GET" | "HEAD"; headers: Readonly<Record<string, string>>}}): RequestDescriptor;
+export declare function listArtifacts(task: TaskArtifactView): readonly TaskArtifact[];
+export declare function buildContentRequest(ctx: TaskArtifactContext & {artifactKey: string; upstreamTaskId: string; clientRequest: {method: "GET" | "HEAD"; headers: Readonly<Record<string, string>>}}): RequestDescriptor;

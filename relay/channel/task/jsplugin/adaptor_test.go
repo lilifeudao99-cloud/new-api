@@ -401,6 +401,43 @@ export function parseTaskResult(){return {status:"SUCCESS"};}
 	assert.Nil(t, descriptor)
 }
 
+func TestDoubaoArtifactsUsePersistedTaskModelAndUpstreamID(t *testing.T) {
+	source, err := plugins.Source("doubao")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{Key: "doubao"})
+	require.NoError(t, err)
+
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelBaseUrl: "https://provider.example",
+		ApiKey:         "test-key",
+	}})
+	taskData, err := common.Marshal(map[string]any{
+		"id":          "upstream-task",
+		"status":      "completed",
+		"url":         "https://provider.example/v1/videos/upstream-task",
+		"content_url": "https://provider.example/v1/videos/upstream-task/content",
+	})
+	require.NoError(t, err)
+	task := &model.Task{
+		TaskID:      "public-task",
+		Status:      model.TaskStatusSuccess,
+		Data:        taskData,
+		Properties:  model.Properties{OriginModelName: "seedance-2.0", UpstreamModelName: "seedance-2.0"},
+		PrivateData: model.TaskPrivateData{UpstreamTaskID: "upstream-task"},
+	}
+
+	artifacts, err := adaptor.ListArtifacts(task)
+	require.NoError(t, err)
+	require.Equal(t, []channel.TaskArtifact{{Key: "video", Type: "video"}}, artifacts)
+
+	request, err := adaptor.BuildContentRequest(task, "video", channel.TaskArtifactClientRequest{Method: http.MethodGet})
+	require.NoError(t, err)
+	require.NotNil(t, request)
+	assert.Equal(t, "https://provider.example/v1/videos/upstream-task/content", request.URL)
+	assert.Equal(t, "Bearer test-key", request.Headers["Authorization"])
+}
+
 func TestTaskAdaptorRejectsInvalidArtifactProjection(t *testing.T) {
 	testCases := []struct {
 		name       string
