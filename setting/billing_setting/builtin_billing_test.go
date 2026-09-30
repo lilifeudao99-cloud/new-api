@@ -110,6 +110,48 @@ func TestGPT6AstraBuiltinBilling(t *testing.T) {
 	}
 }
 
+func TestGPT61SolBuiltinBilling(t *testing.T) {
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	saved := *settings
+	savedRatios, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	savedOptions := common.OptionMap
+	t.Cleanup(func() {
+		*settings, common.OptionMap = saved, savedOptions
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	common.OptionMap = map[string]string{"billing_setting.billing_mode": `{}`, "billing_setting.billing_expr": `{}`}
+	require.NoError(t, config.GlobalConfig.LoadFromDB(common.OptionMap))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+
+	assert.Equal(t, billing_setting.BillingModeTieredExpr, billing_setting.GetBillingMode("gpt-6.1-sol"))
+	expression, ok := billing_setting.GetBillingExpr("gpt-6.1-sol")
+	require.True(t, ok)
+
+	for _, tc := range []struct {
+		name                           string
+		input, output, cached, written int
+		quota                          int
+	}{
+		{"standard rates including cache", 1000, 100, 200, 40, 1320},
+		{"long-context rates apply to whole request", 272001, 100, 200, 40, 544392},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := &dto.Usage{
+				PromptTokens: tc.input, CompletionTokens: tc.output,
+				PromptTokensDetails: dto.InputTokenDetails{CachedTokens: tc.cached, CacheWriteTokens: tc.written},
+			}
+			params := service.BuildTieredTokenParams(usage, false, billingexpr.UsedVars(expression))
+			result, err := billingexpr.ComputeTieredQuota(&billingexpr.BillingSnapshot{
+				ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1, QuotaPerUnit: 500000,
+			}, params)
+			require.NoError(t, err)
+			assert.Equal(t, tc.quota, result.ActualQuotaAfterGroup)
+		})
+	}
+}
+
 func TestImageModelBuiltinPricesAndOverrides(t *testing.T) {
 	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
 	saved := *settings

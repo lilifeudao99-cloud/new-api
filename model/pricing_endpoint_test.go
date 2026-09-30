@@ -2,12 +2,16 @@ package model
 
 import (
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	_ "github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -189,6 +193,52 @@ func TestPricingNativeChannelEndpointTypesUnchanged(t *testing.T) {
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeOpenAI}, byModel["gpt-4o"])
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeGemini, constant.EndpointTypeOpenAI}, byModel["gemini-2.5-flash"])
 	assert.Equal(t, []constant.EndpointType{constant.EndpointTypeAnthropic, constant.EndpointTypeOpenAI}, byModel["claude-3-5-sonnet"])
+}
+
+func TestPricingIncludesGPT61SolBuiltinRates(t *testing.T) {
+	resetPricingEndpointTestTables(t)
+
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	savedSettings := *settings
+	savedModes := maps.Clone(savedSettings.BillingMode)
+	savedExpressions := maps.Clone(savedSettings.BillingExpr)
+	savedPluginExpressions := maps.Clone(savedSettings.PluginBillingExpr)
+	savedRatios := ratio_setting.ModelRatio2JSONString()
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		*settings = billing_setting.BillingSetting{
+			BillingMode:       savedModes,
+			BillingExpr:       savedExpressions,
+			PluginBillingExpr: savedPluginExpressions,
+		}
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	*settings = billing_setting.BillingSetting{
+		BillingMode:       map[string]string{},
+		BillingExpr:       map[string]string{},
+		PluginBillingExpr: map[string]string{},
+	}
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+
+	insertPricingEndpointChannel(t, 401, constant.ChannelTypeOpenAI, dto.ChannelOtherSettings{})
+	insertPricingEndpointAbility(t, 401, "gpt-6.1-sol")
+	InitChannelCache()
+
+	var listed *Pricing
+	for _, pricing := range GetPricing() {
+		if pricing.ModelName == "gpt-6.1-sol" {
+			listed = &pricing
+			break
+		}
+	}
+	require.NotNil(t, listed, "enabled model should appear in the pricing catalog")
+	assert.Equal(t, billing_setting.BillingModeTieredExpr, listed.BillingMode)
+	assert.Equal(t,
+		`len <= 272000 ? tier("standard", p * 2 + cr * 0.1 + cc * 2.5 + c * 10) : tier("long_context", p * 4 + cr * 0.2 + cc * 5 + c * 15)`,
+		listed.BillingExpr,
+	)
 }
 
 func TestPricingTaskVideoPluginUsesOpenAIVideoEndpoint(t *testing.T) {
