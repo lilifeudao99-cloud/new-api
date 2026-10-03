@@ -141,6 +141,39 @@ export async function logout(): Promise<ApiResponse> {
   })
 }
 
+// Starts the TapCanvas SSO handoff. The API call must go through the shared
+// axios client so the current Authorization header is attached; a plain link
+// would lose the access token before the one-time ticket is issued.
+export async function launchCanvas(): Promise<void> {
+  // Open the destination synchronously from the click handler so browsers do
+  // not classify the eventual SSO redirect as a popup. The one-time ticket is
+  // still requested first; the blank tab never receives credentials or keys.
+  const destination = window.open('about:blank', '_blank')
+  if (destination) destination.opener = null
+
+  try {
+    const res = await api.post('/api/canvas/sso/launch', undefined, {
+      skipAuthRefresh: false,
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    })
+    const redirectUrl = res.data?.redirect_url
+    if (typeof redirectUrl !== 'string' || !redirectUrl.trim()) {
+      throw new Error('画布跳转地址无效')
+    }
+    if (destination && !destination.closed) {
+      destination.location.assign(redirectUrl)
+      return
+    }
+    // Popup blockers can reject window.open. Falling back to the current tab
+    // keeps the feature usable without exposing the SSO ticket in the UI.
+    window.location.assign(redirectUrl)
+  } catch (error) {
+    destination?.close()
+    throw error
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Password Management
 // ----------------------------------------------------------------------------

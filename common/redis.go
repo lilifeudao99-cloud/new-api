@@ -78,6 +78,17 @@ func RedisGet(key string) (string, error) {
 	return val, err
 }
 
+// RedisGetDel atomically reads and removes a short-lived one-time value.
+// It is used by server-to-server handoff flows where a GET followed by DEL
+// would permit a replay race.
+func RedisGetDel(key string) (string, error) {
+	if DebugEnabled {
+		SysLog(fmt.Sprintf("Redis GETDEL: key=%s", key))
+	}
+	ctx := context.Background()
+	return RDB.GetDel(ctx, key).Result()
+}
+
 //func RedisExpire(key string, expiration time.Duration) error {
 //	ctx := context.Background()
 //	return RDB.Expire(ctx, key, expiration).Err()

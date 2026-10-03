@@ -32,6 +32,65 @@ type Token struct {
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
+const CanvasIntegrationTokenName = "ailili-canvas"
+
+// EnsureCanvasIntegrationToken returns the stable server-side token used by
+// the TapCanvas integration. The user row is locked while checking/creating
+// so concurrent SSO callbacks cannot create duplicate canvas tokens.
+func EnsureCanvasIntegrationToken(userID int) (*Token, bool, error) {
+	if userID <= 0 {
+		return nil, false, errors.New("user id 无效")
+	}
+	var token Token
+	created := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockForUpdate(tx).Select("id", "status").First(&user, userID).Error; err != nil {
+			return err
+		}
+		if user.Status != common.UserStatusEnabled {
+			return errors.New("用户已被禁用")
+		}
+		if err := tx.Where("user_id = ? AND name = ?", userID, CanvasIntegrationTokenName).Order("id asc").First(&token).Error; err == nil {
+			if token.Status != common.TokenStatusEnabled ||
+				(token.ExpiredTime != -1 && token.ExpiredTime <= common.GetTimestamp()) ||
+				(!token.UnlimitedQuota && token.RemainQuota <= 0) {
+				return ErrTokenInvalid
+			}
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		key, err := common.GenerateKey()
+		if err != nil {
+			return err
+		}
+		token = Token{
+			UserId:             userID,
+			Name:               CanvasIntegrationTokenName,
+			Key:                key,
+			Status:             common.TokenStatusEnabled,
+			CreatedTime:        common.GetTimestamp(),
+			AccessedTime:       common.GetTimestamp(),
+			ExpiredTime:        -1,
+			UnlimitedQuota:     true,
+			ModelLimitsEnabled: false,
+			// An empty group inherits the user's current group in TokenAuth.
+			Group:           "",
+			CrossGroupRetry: false,
+		}
+		if err := tx.Create(&token).Error; err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &token, created, nil
+}
+
 func (token *Token) GetAutoGroups() ([]string, error) {
 	if token.AutoGroups == "" {
 		return nil, nil

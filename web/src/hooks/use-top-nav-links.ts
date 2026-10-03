@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
+import { launchCanvas } from '@/features/auth'
 
 export type TopNavLink = {
   title: string
@@ -29,6 +30,7 @@ export type TopNavLink = {
   disabled?: boolean
   requiresAuth?: boolean
   external?: boolean
+  onClick?: () => void | Promise<void>
 }
 
 /**
@@ -86,6 +88,14 @@ export function useTopNavLinks(): TopNavLink[] {
       title: '快速生图',
       href: 'https://cpa-image.site/zh-CN/',
       external: true,
+    })
+  }
+
+  if (isAuthed) {
+    links.push({
+      title: 'AI 画布',
+      href: '#canvas',
+      onClick: () => launchCanvas(),
     })
   }
 

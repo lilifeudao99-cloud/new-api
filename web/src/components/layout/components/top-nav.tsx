@@ -64,11 +64,19 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
           </DropdownMenuTrigger>
           <DropdownMenuContent side='bottom' align='start'>
             {normalizedLinks.map(
-              ({ title, href, isActive, disabled, external }) => (
+              ({ title, href, isActive, disabled, external, onClick }) => (
                 <DropdownMenuItem
                   key={`${title}-${href}`}
                   render={
-                    external ? (
+                    onClick ? (
+                      <button
+                        type='button'
+                        onClick={() => void onClick()}
+                        className={!isActive ? 'text-muted-foreground' : ''}
+                      >
+                        {title}
+                      </button>
+                    ) : external ? (
                       <a
                         href={href}
                         target='_blank'
@@ -102,8 +110,17 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
         )}
         {...props}
       >
-        {normalizedLinks.map(({ title, href, isActive, disabled, external }) =>
-          external ? (
+        {normalizedLinks.map(({ title, href, isActive, disabled, external, onClick }) =>
+          onClick ? (
+            <button
+              key={`${title}-${href}`}
+              type='button'
+              onClick={() => void onClick()}
+              className={`hover:text-primary text-sm font-medium transition-colors ${isActive ? '' : 'text-muted-foreground'}`}
+            >
+              {title}
+            </button>
+          ) : external ? (
             <a
               key={`${title}-${href}`}
               href={href}

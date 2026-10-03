@@ -97,6 +97,7 @@ export type TopNavLink = {
   disabled?: boolean
   requiresAuth?: boolean
   external?: boolean
+  onClick?: () => void | Promise<void>
 }
 
 /**

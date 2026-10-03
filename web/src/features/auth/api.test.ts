@@ -23,11 +23,49 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { api, type RefreshOutcome } from '@/lib/api'
 import type { AuthBundle } from '@/stores/auth-store'
 
-import { executeLogout } from './api'
+import { executeLogout, launchCanvas } from './api'
 import { useOAuthLogin } from './hooks/use-oauth-login'
 import { consumeOAuthLoginRedirect } from './lib/oauth-callback-mode'
 
 afterEach(() => vi.restoreAllMocks())
+
+describe('canvas SSO launch', () => {
+  test('opens a new tab immediately and moves it to the one-time SSO URL', async () => {
+    const destination = {
+      closed: false,
+      opener: window,
+      location: { assign: vi.fn() },
+      close: vi.fn(),
+    }
+    vi.spyOn(window, 'open').mockReturnValue(destination as unknown as Window)
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: { redirect_url: 'https://canvas.ailili.chat/auth/canvas/callback?code=one-time' },
+    } as never)
+
+    await launchCanvas()
+
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(destination.opener).toBeNull()
+    expect(destination.location.assign).toHaveBeenCalledWith(
+      'https://canvas.ailili.chat/auth/canvas/callback?code=one-time'
+    )
+    expect(destination.close).not.toHaveBeenCalled()
+  })
+
+  test('closes the blank tab when ticket issuance fails', async () => {
+    const destination = {
+      closed: false,
+      opener: window,
+      location: { assign: vi.fn() },
+      close: vi.fn(),
+    }
+    vi.spyOn(window, 'open').mockReturnValue(destination as unknown as Window)
+    vi.spyOn(api, 'post').mockRejectedValue(new Error('launch failed'))
+
+    await expect(launchCanvas()).rejects.toThrow('launch failed')
+    expect(destination.close).toHaveBeenCalledOnce()
+  })
+})
 
 test.each([true, false])(
   'starts Telegram OAuth only when configuration is ready: %s',

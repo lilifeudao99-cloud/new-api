@@ -24,6 +24,7 @@ export {
   login,
   login2fa,
   logout,
+  launchCanvas,
   register,
   sendPasswordResetEmail,
   sendEmailVerification,
