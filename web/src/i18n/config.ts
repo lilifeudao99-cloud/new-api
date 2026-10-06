@@ -21,30 +21,73 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
 import { convertDetectedLanguage } from './languages'
-import en from './locales/en.json'
-import fr from './locales/fr.json'
-import ja from './locales/ja.json'
-import ru from './locales/ru.json'
-import vi from './locales/vi.json'
-import zhTW from './locales/zh-TW.json'
 import zhCN from './locales/zh.json'
 
 export const resources = {
-  en,
   zhCN,
-  fr,
-  ru,
-  ja,
-  vi,
-  zhTW,
 } as const
+
+type SupportedLanguage =
+  | keyof typeof resources
+  | 'en'
+  | 'fr'
+  | 'ru'
+  | 'ja'
+  | 'vi'
+  | 'zhTW'
+type TranslationResource = { translation: Record<string, unknown> }
+
+// Keep the default language in the entry chunk. Other language packs are
+// loaded only after the user selects them, so the public home page stays
+// Chinese without paying for translations it will never display.
+const localeLoaders: Record<
+  Exclude<SupportedLanguage, 'zhCN'>,
+  () => Promise<{ default: TranslationResource }>
+> = {
+  en: () => import('./locales/en.json'),
+  fr: () => import('./locales/fr.json'),
+  ru: () => import('./locales/ru.json'),
+  ja: () => import('./locales/ja.json'),
+  vi: () => import('./locales/vi.json'),
+  zhTW: () => import('./locales/zh-TW.json'),
+}
+
+const localePromises = new Map<string, Promise<void>>()
+
+async function loadLocale(language: string) {
+  const locale = language as Exclude<SupportedLanguage, 'zhCN'>
+  const loader = localeLoaders[locale]
+  if (!loader || i18n.hasResourceBundle(locale, 'translation')) return
+
+  const existing = localePromises.get(locale)
+  if (existing) return existing
+
+  const promise = loader()
+    .then(({ default: resource }) => {
+      i18n.addResourceBundle(
+        locale,
+        'translation',
+        resource.translation,
+        true,
+        true
+      )
+    })
+    .then(async () => {
+      // A languageChanged event fires before this async chunk resolves. Repeat
+      // the change once the bundle is present so react-i18next re-renders with
+      // the newly loaded translations.
+      if (i18n.language === locale) await i18n.changeLanguage(locale)
+    })
+  localePromises.set(locale, promise)
+  return promise
+}
 
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
-    fallbackLng: 'en',
+    fallbackLng: 'zhCN',
     supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
     load: 'currentOnly',
     nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
@@ -53,12 +96,25 @@ i18n
       escapeValue: false, // not needed for react as it escapes by default
     },
     detection: {
-      order: ['localStorage', 'navigator'],
+      // Chinese is the product default. A manually selected language is
+      // persisted in localStorage and takes precedence on later visits.
+      order: ['localStorage'],
       caches: ['localStorage'],
       // Browsers report `zh-CN`/`zh-TW`/`zh`; map them onto our `zhCN`/`zhTW`
       // codes (non-Chinese codes pass through for normal supportedLngs matching).
       convertDetectedLanguage,
     },
   })
+  .then(() => loadLocale(i18n.resolvedLanguage ?? i18n.language))
+  .catch(() => {
+    // Keep the Chinese fallback usable if an optional locale chunk fails.
+  })
+
+// The default Chinese bundle is available immediately. When a user selects a
+// different language, fetch that language pack and re-apply the language after
+// it arrives so react-i18next re-renders with the loaded translations.
+i18n.on('languageChanged', (language) => {
+  void loadLocale(language)
+})
 
 export default i18n

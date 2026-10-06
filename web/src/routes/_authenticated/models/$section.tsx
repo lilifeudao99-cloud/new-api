@@ -49,7 +49,7 @@ const modelsSearchSchema = z.object({
 })
 
 export const Route = createFileRoute('/_authenticated/models/$section')({
-  beforeLoad: ({ params }) => {
+  loader: ({ params }) => {
     const { auth } = useAuthStore.getState()
 
     if (!auth.user || auth.user.role < ROLE.ADMIN) {

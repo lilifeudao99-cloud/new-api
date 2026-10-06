@@ -25,7 +25,7 @@ import {
 } from '@/features/dashboard/section-registry'
 
 export const Route = createFileRoute('/_authenticated/dashboard/$section')({
-  beforeLoad: ({ params }) => {
+  loader: ({ params }) => {
     const validSections = DASHBOARD_SECTION_IDS as unknown as string[]
     if (!validSections.includes(params.section)) {
       throw redirect({

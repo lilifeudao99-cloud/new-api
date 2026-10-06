@@ -16,18 +16,46 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
-import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import { Hero } from './components/sections/hero'
 import { useHomePageContent } from './hooks'
+
+const LazyHomeSections = lazy(() =>
+  import('./components/sections/lazy-home-sections').then((module) => ({
+    default: module.LazyHomeSections,
+  }))
+)
+
+function DeferredHomeSections(props: { isAuthenticated: boolean }) {
+  const [isReady, setIsReady] = useState(false)
+
+  useEffect(() => {
+    const render = () => setIsReady(true)
+    if (typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(render, { timeout: 1200 })
+      return () => window.cancelIdleCallback(idleId)
+    }
+
+    const timeoutId = setTimeout(render, 0)
+    return () => clearTimeout(timeoutId)
+  }, [])
+
+  if (!isReady) return null
+
+  return (
+    <Suspense fallback={null}>
+      <LazyHomeSections isAuthenticated={props.isAuthenticated} />
+    </Suspense>
+  )
+}
 
 export function Home() {
   const { i18n, t } = useTranslation()
@@ -123,11 +151,7 @@ export function Home() {
   return (
     <PublicLayout showMainContainer={false}>
       <Hero isAuthenticated={isAuthenticated} />
-      <Stats />
-      <Features />
-      <HowItWorks />
-      <CTA isAuthenticated={isAuthenticated} />
-      <Footer />
+      <DeferredHomeSections isAuthenticated={isAuthenticated} />
     </PublicLayout>
   )
 }

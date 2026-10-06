@@ -27,7 +27,7 @@ import {
 export const Route = createFileRoute(
   '/_authenticated/system-settings/operations/$section'
 )({
-  beforeLoad: ({ params }) => {
+  loader: ({ params }) => {
     if (params.section === 'monitoring') {
       throw redirect({
         to: '/system-settings/models/$section',

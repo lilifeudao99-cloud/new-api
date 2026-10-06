@@ -36,20 +36,6 @@ export default defineConfig(({ envMode }) => {
           priority: 0,
           enforce: true,
         },
-        'vendor-ui-primitives': {
-          test: /node_modules[\\/](@base-ui|@radix-ui)[\\/]/,
-          name: 'vendor-ui-primitives',
-          chunks: 'all',
-          priority: 0,
-          enforce: true,
-        },
-        'vendor-tanstack': {
-          test: /node_modules[\\/]@tanstack[\\/]/,
-          name: 'vendor-tanstack',
-          chunks: 'all',
-          priority: 0,
-          enforce: true,
-        },
       },
     },
     source: {
@@ -92,8 +78,21 @@ export default defineConfig(({ envMode }) => {
           tanstackRouter({
             target: 'react',
             // Dev: avoid per-route async chunks (reduces white flash on navigation + faster HMR feedback).
-            // Prod: keep route-based code splitting.
+            // Prod: split both route components and route loaders. Keeping loader
+            // imports in the route tree makes every admin feature part of the
+            // initial bundle even when the visitor only opens the public home page.
             autoCodeSplitting: isProd,
+            codeSplittingOptions: isProd
+              ? {
+                  defaultBehavior: [
+                    ['loader'],
+                    ['component'],
+                    ['pendingComponent'],
+                    ['errorComponent'],
+                    ['notFoundComponent'],
+                  ],
+                }
+              : undefined,
           }),
         ],
       },
