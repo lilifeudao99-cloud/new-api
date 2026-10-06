@@ -558,7 +558,8 @@ it('switches provider group prices, localized conditions and examples, and shows
   expect(within(panel).getByText('$0.5')).toBeVisible()
 })
 
-it('shows provider count, price range and missing-price status in both list and card views', () => {
+it('shows provider count, price range and missing-price status in both list and card views', async () => {
+  await act(() => i18next.changeLanguage('en'))
   const shared: PricingModel = {
     ...model,
     billing_mode: undefined,

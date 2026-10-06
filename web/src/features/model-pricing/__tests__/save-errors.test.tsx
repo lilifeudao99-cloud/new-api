@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError, type AxiosAdapter } from 'axios'
 import { toast } from 'sonner'
@@ -36,6 +36,7 @@ const originalAdapter = api.defaults.adapter
 let client: QueryClient | undefined
 
 afterEach(() => {
+  cleanup()
   client?.clear()
   api.defaults.adapter = originalAdapter
   useAuthStore.getState().auth.setUser(null)

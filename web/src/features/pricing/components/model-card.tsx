@@ -321,6 +321,16 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           <div className='grid grid-cols-[repeat(auto-fit,minmax(88px,1fr))] gap-x-3 gap-y-2'>
             {priceSummary}
           </div>
+          {dynamicSummary?.providerCount && (
+            <p className='text-muted-foreground text-xs'>
+              {t('{{count}} providers', {
+                count: dynamicSummary.providerCount,
+              })}
+              {dynamicSummary.hasUnconfiguredProviders && (
+                <> · {t('Not configured for some providers')}</>
+              )}
+            </p>
+          )}
         </div>
         {(groups.length > 0 || endpoints.length > 0) && (
           <dl

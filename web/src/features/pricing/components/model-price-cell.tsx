@@ -264,6 +264,11 @@ export function ModelPriceCell(props: {
       >
         {caption}
       </span>
+      {providerCaption && (
+        <span className='text-muted-foreground block text-xs'>
+          {[providerCaption, unconfiguredCaption].filter(Boolean).join(' · ')}
+        </span>
+      )}
     </span>
   )
 }
