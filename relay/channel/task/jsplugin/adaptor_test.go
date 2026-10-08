@@ -1040,6 +1040,28 @@ export function extractUsage(ctx) {
 	assert.Equal(t, map[string]float64{"legacy_multiplier": 2}, ratios)
 }
 
+func TestTaskAdaptorImageBatchInputDoesNotConflictWithUsageFacts(t *testing.T) {
+	source, err := plugins.Source("image-batch")
+	require.NoError(t, err)
+	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "image-batch"})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+
+	err = adaptor.validateResolvedUsageRequest(map[string]any{
+		"model":  "nano-banana-pro",
+		"images": []any{map[string]any{"__fileRef": "request_file:image", "encoding": "tos_url"}},
+	}, "nano-banana-pro")
+	require.NoError(t, err)
+
+	value, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"requestBody": map[string]any{"images": []any{"https://example.test/input.png"}},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"image_count":1}`, string(encoded))
+}
+
 func TestTaskAdaptorAcceptsNormalizedLegacyTokenCounters(t *testing.T) {
 	source := `
 export const meta = {apiVersion:1,key:"normalized-tokens",name:"Normalized Tokens",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};

@@ -18,7 +18,7 @@ export const meta = {
   models: ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "nano-banana-2", "nano-banana-pro"],
   fetchMode: "per_task",
   usageSchema: {
-    images: {
+    image_count: {
       type: "number",
       unit: "count",
       unitLabel: { en: "image", zh: "张" },
@@ -240,8 +240,12 @@ export function parseSubmitResponse(_ctx, resp) {
 export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
   const body = objectValue(ctx.requestBody);
-  if (Array.isArray(body.tasks)) return { images: body.tasks.length };
-  return { images: Number.isInteger(body.n) && body.n > 0 ? body.n : 1 };
+  const imageCount = Array.isArray(body.tasks) ? body.tasks.length : (Number.isInteger(body.n) && body.n > 0 ? body.n : 1);
+  // Keep the request-body `images` array separate from the numeric billing
+  // fact.  The host validates declared usage fields recursively, so sharing
+  // that name would make multipart image edits look like a non-numeric usage
+  // value before the task is submitted.
+  return { image_count: imageCount };
 }
 
 export function buildQueryRequest(ctx) {
