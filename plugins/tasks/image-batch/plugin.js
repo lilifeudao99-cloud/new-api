@@ -27,7 +27,7 @@ export const meta = {
   },
   routes: [
     { method: "POST", path: "/v1/image-batches/generations", type: "submit", action: "image_generation", decode: "decodeGeneration", render: "batchCreated" },
-    { method: "POST", path: "/v1/image-batches/edits", type: "submit", action: "image_edit", decode: "decodeEdit", render: "batchCreated" },
+    { method: "POST", path: "/v1/image-batches/edits", type: "submit", action: "image_edit", decode: "decodeEdit", render: "batchCreated", bodyKinds: ["json", "multipart"] },
     { method: "GET", path: "/v1/image-batches/:batch_id", type: "query", taskIdParam: "batch_id", render: "batchStatus" },
     { method: "GET", path: "/v1/image-batches/:batch_id/items", type: "query", taskIdParam: "batch_id", render: "batchItems" },
   ],
@@ -70,8 +70,24 @@ function decodeSubmit(ctx, action) {
 function validateImages(images) {
   if (!Array.isArray(images) || images.length < 1 || images.length > 10) throw new Error("images must contain between 1 and 10 public URLs");
   for (const image of images) {
-    if (typeof image !== "string" || !/^https?:\/\//i.test(image) || image.length > 4096) throw new Error("images must contain public http(s) URLs");
+    const fileRef = image && typeof image === "object" && typeof image.__fileRef === "string" && image.encoding === "tos_url";
+    if (!fileRef && (typeof image !== "string" || !/^https?:\/\//i.test(image) || image.length > 4096)) throw new Error("images must contain public http(s) URLs or uploaded image files");
   }
+}
+
+function decodeEditBody(ctx) {
+  if (!ctx.body) throw new Error("request body required");
+  if (ctx.body.kind === "json") return ctx.body.value;
+  if (ctx.body.kind !== "multipart") throw new Error("JSON or multipart body required");
+  const fields = objectValue(ctx.body.fields);
+  const first = function (name) { const value = fields[name]; return Array.isArray(value) ? value[0] : value; };
+  const body = { prompt: first("prompt"), model: first("model") || ctx.model };
+  for (const key of ["size", "quality", "response_format"]) if (first(key) !== undefined) body[key] = first(key);
+  if (first("n") !== undefined && String(first("n")) !== "") body.n = Number(first("n"));
+  const files = Array.isArray(ctx.files) ? ctx.files : [];
+  const images = files.filter(function (file) { return file && (file.field === "image" || file.field === "images"); });
+  if (images.length) body.images = images.map(function (file) { return { __fileRef: file.ref, encoding: "tos_url", mimeType: file.mimeType || "application/octet-stream" }; });
+  return body;
 }
 
 export const native = {
@@ -79,8 +95,7 @@ export const native = {
     return decodeSubmit(ctx, "image_generation");
   },
   decodeEdit: function (ctx) {
-    if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
-    const body = ctx.body.value;
+    const body = decodeEditBody(ctx);
     validateCommon(body);
     const model = requestModel(ctx, body);
     const hasImages = Array.isArray(body.images);
@@ -228,8 +243,9 @@ export function extractUsage(ctx) {
 }
 
 export function buildQueryRequest(ctx) {
+  const cursor = trimmed(ctx.cursor);
   return {
-    url: ctx.baseUrl + "/v1/image-batches/" + encodeURIComponent(ctx.taskId) + "/items?limit=100",
+    url: ctx.baseUrl + "/v1/image-batches/" + encodeURIComponent(ctx.taskId) + "/items?limit=100" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""),
     method: "GET",
     headers: { Authorization: "Bearer " + ctx.apiKey, Accept: "application/json" },
   };
@@ -321,12 +337,16 @@ export const protocols = {
 
 export function listArtifacts(task) {
   if (task.status !== "SUCCESS") return [];
-  return firstOutputURL(task) ? [{ key: "image", type: "image", mimeType: "image/*" }] : [];
+  return itemList(task).map(function (item, index) {
+    return trimmed(item && item.output_url) ? { key: "image-" + index, type: "image", mimeType: "image/*" } : null;
+  }).filter(Boolean);
 }
 
 export function buildContentRequest(ctx) {
-  if (ctx.artifactKey !== "image") throw new Error("artifact_not_found");
-  const url = firstOutputURL(ctx);
+  const match = /^image-(\d+)$/.exec(String(ctx.artifactKey || ""));
+  if (!match) throw new Error("artifact_not_found");
+  const item = itemList(ctx)[Number(match[1])];
+  const url = trimmed(item && item.output_url);
   if (!url) throw new Error("artifact_not_found");
   return { url: url, method: ctx.clientRequest.method, credentialless: true };
 }

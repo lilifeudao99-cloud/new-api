@@ -129,8 +129,19 @@ type TaskPrivateData struct {
 	// PluginState is plugin-owned cross-round data. Unlike Task.Data it is
 	// only replaced when a hook explicitly returns state.
 	PluginState json.RawMessage `json:"plugin_state,omitempty"`
+	// Artifacts contains private references to durable task outputs. Public task
+	// responses expose only host-issued capability URLs, never these object keys.
+	Artifacts map[string]TaskArtifactReference `json:"artifacts,omitempty"`
 	// PollFailures counts consecutive unrecognized or transient poll outcomes.
 	PollFailures int `json:"poll_failures,omitempty"`
+}
+
+type TaskArtifactReference struct {
+	Backend   string `json:"backend"`
+	Bucket    string `json:"bucket"`
+	ObjectKey string `json:"object_key"`
+	MimeType  string `json:"mime_type,omitempty"`
+	Size      int64  `json:"size,omitempty"`
 }
 
 type TaskExecutionSnapshot struct {
@@ -202,7 +213,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 {
+		!p.ResponsesBackground && len(p.PluginState) == 0 && len(p.Artifacts) == 0 && p.PollFailures == 0 {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。

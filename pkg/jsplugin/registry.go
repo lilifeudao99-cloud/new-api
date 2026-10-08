@@ -1724,7 +1724,7 @@ func decodeRoutes(value any) ([]Route, error) {
 		}
 		for key := range object {
 			switch key {
-			case "method", "path", "type", "action", "decode", "render", "taskIdParam", "models":
+			case "method", "path", "type", "action", "decode", "render", "taskIdParam", "models", "bodyKinds":
 			default:
 				return nil, fmt.Errorf("plugin meta route %d has unknown field %q", index, key)
 			}
@@ -1760,6 +1760,22 @@ func decodeRoutes(value any) ([]Route, error) {
 			}
 			if len(route.Models) == 0 {
 				return nil, fmt.Errorf("plugin meta route %d models must contain at least one model", index)
+			}
+		}
+		if _, exists := object["bodyKinds"]; exists {
+			rawKinds, ok := object["bodyKinds"].([]any)
+			if !ok || len(rawKinds) == 0 {
+				return nil, fmt.Errorf("plugin meta route %d bodyKinds must be a non-empty array", index)
+			}
+			for _, rawKind := range rawKinds {
+				kind, ok := rawKind.(string)
+				if !ok || (BodyKind(kind) != BodyJSON && BodyKind(kind) != BodyMultipart && BodyKind(kind) != BodyForm) {
+					return nil, fmt.Errorf("plugin meta route %d has invalid body kind", index)
+				}
+				if slices.Contains(route.BodyKinds, BodyKind(kind)) {
+					return nil, fmt.Errorf("plugin meta route %d has duplicate body kind", index)
+				}
+				route.BodyKinds = append(route.BodyKinds, BodyKind(kind))
 			}
 		}
 		routes = append(routes, route)

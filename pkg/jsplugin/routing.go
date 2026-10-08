@@ -32,7 +32,8 @@ type Route struct {
 	// Models restricts this route to the listed models. The host matches the
 	// canonical top-level "model" body field before any JS hook runs; empty
 	// means unrestricted. Must be a subset of meta.models.
-	Models []string `json:"models,omitempty"`
+	Models    []string   `json:"models,omitempty"`
+	BodyKinds []BodyKind `json:"bodyKinds,omitempty"`
 }
 
 // ProtocolClaim is one entry of meta.protocols. Models narrows the protocol's

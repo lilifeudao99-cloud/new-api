@@ -1,6 +1,10 @@
 package plugins_test
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -68,6 +72,71 @@ func TestImageBatchSubmitAndPollHooks(t *testing.T) {
 	assert.JSONEq(t, `{"taskId":"task-public-1","status":"SUCCESS","reason":"rejected","url":"https://cdn.example/image.png"}`, string(resultJSON))
 }
 
+func TestImageBatchMultipartEditDecoderUsesHostFileReferences(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
+		"model": "nano-banana-pro",
+		"body":  map[string]any{"kind": "multipart", "fields": map[string]any{"prompt": []any{"make it sunset"}, "model": []any{"nano-banana-pro"}}, "files": []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png"}}},
+		"files": []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png", "size": 12}},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &decoded))
+	requestBody := decoded["requestBody"].(map[string]any)
+	image := requestBody["images"].([]any)[0].(map[string]any)
+	assert.Equal(t, "request_file:image", image["__fileRef"])
+	assert.Equal(t, "tos_url", image["encoding"])
+}
+
+func TestImageBatchPollRequestUsesCursor(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	value, err := plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{"baseUrl": "https://upstream.example", "taskId": "batch-1", "cursor": "cursor+/next"})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var descriptor map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &descriptor))
+	assert.Equal(t, "https://upstream.example/v1/image-batches/batch-1/items?limit=100&cursor=cursor%2B%2Fnext", descriptor["url"])
+}
+
+func TestImageBatchFetchTaskCollectsEveryCursorPage(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"item_id":"one","status":"running"}],"next_cursor":"next-1","has_more":true}`)
+			return
+		}
+		if r.URL.Query().Get("cursor") != "next-1" {
+			http.Error(w, "unexpected cursor", http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"item_id":"two","status":"succeeded","output_url":"https://cdn.example/image.png"}],"next_cursor":"","has_more":false}`)
+	}))
+	defer server.Close()
+	plugin := loadImageBatchPlugin(t)
+	adaptor := taskplugin.New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "upstream-key", ChannelBaseUrl: server.URL}})
+	task := &model.Task{TaskID: "public-task", PrivateData: model.TaskPrivateData{UpstreamTaskID: "batch-1"}}
+	resp, err := adaptor.FetchTask(server.URL, "upstream-key", task, "")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	var result struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.Len(t, result.Data, 2)
+	assert.Equal(t, "one", result.Data[0]["item_id"])
+	assert.Equal(t, "two", result.Data[1]["item_id"])
+	assert.Equal(t, 2, requests)
+	assert.Equal(t, int64(len(body)), resp.ContentLength)
+}
+
 func TestImageBatchArtifactProjectsStableProxy(t *testing.T) {
 	plugin := loadImageBatchPlugin(t)
 	adaptor := taskplugin.New(plugin)
@@ -80,10 +149,10 @@ func TestImageBatchArtifactProjectsStableProxy(t *testing.T) {
 	artifacts, err := adaptor.ListArtifacts(task)
 	require.NoError(t, err)
 	assert.Len(t, artifacts, 1)
-	assert.Equal(t, "image", artifacts[0].Key)
+	assert.Equal(t, "image-0", artifacts[0].Key)
 	assert.Equal(t, "image", artifacts[0].Type)
 
-	descriptor, err := adaptor.BuildContentRequest(task, "image", channel.TaskArtifactClientRequest{Method: "GET"})
+	descriptor, err := adaptor.BuildContentRequest(task, "image-0", channel.TaskArtifactClientRequest{Method: "GET"})
 	require.NoError(t, err)
 	require.NotNil(t, descriptor)
 	assert.Equal(t, "https://cdn.example/image.png", descriptor.URL)

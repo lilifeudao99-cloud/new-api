@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -502,7 +505,11 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, resp.StatusCode, err.Error())
 	}
 
-	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
+	if isImageBatchTask(task) {
+		logger.LogDebug(ctx, "updateVideoSingleTask image batch response bytes=%d", len(responseBody))
+	} else {
+		logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
+	}
 
 	switch classifyPollHTTP(resp.StatusCode) {
 	case pollClassNotFound:
@@ -538,6 +545,16 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 	if classifyPollHTTP(resp.StatusCode) == pollClassOtherClient && isNonTerminalPollStatus(parsedStatus) {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassUnrecognized, resp.StatusCode, unrecognizedPollDetail(taskResult.Reason, responseBody))
+	}
+	if parsedStatus == model.TaskStatusSuccess && isImageBatchTask(task) && GetTaskArtifactStore().Enabled() {
+		persistedBody, stableFirstURL, persistErr := persistImageBatchOutputs(ctx, task, responseBody)
+		if persistErr != nil {
+			return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransient, resp.StatusCode, "image output persistence failed")
+		}
+		responseBody = persistedBody
+		if stableFirstURL != "" {
+			taskResult.Url = stableFirstURL
+		}
 	}
 
 	task.Data = redactVideoResponseBody(responseBody)
@@ -621,6 +638,76 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	return nil
+}
+
+func isImageBatchTask(task *model.Task) bool {
+	return task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil && task.PrivateData.Execution.TaskPlugin.Key == "image-batch"
+}
+
+func persistImageBatchOutputs(ctx context.Context, task *model.Task, responseBody []byte) ([]byte, string, error) {
+	var payload map[string]any
+	if err := common.Unmarshal(responseBody, &payload); err != nil {
+		return nil, "", err
+	}
+	items, ok := payload["data"].([]any)
+	if !ok || len(items) == 0 {
+		return nil, "", fmt.Errorf("image batch result has no items")
+	}
+	store := GetTaskArtifactStore()
+	client := GetSSRFProtectedHTTPClient()
+	firstURL := ""
+	for index, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok || strings.ToLower(strings.TrimSpace(fmt.Sprint(item["status"]))) != "succeeded" {
+			continue
+		}
+		origin, _ := item["output_url"].(string)
+		origin = strings.TrimSpace(origin)
+		if len(origin) > 64<<10 {
+			return nil, "", fmt.Errorf("image output URL is too long")
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed == nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+			return nil, "", fmt.Errorf("invalid image output URL")
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, "", err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, "", fmt.Errorf("image output returned HTTP %d", resp.StatusCode)
+		}
+		mimeType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+		if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+			resp.Body.Close()
+			return nil, "", fmt.Errorf("upstream result is not an image")
+		}
+		key := "image-" + strconv.Itoa(index)
+		ref, err := store.Persist(ctx, task, types.TaskArtifact{Key: key, Type: "image", MimeType: mimeType}, io.LimitReader(resp.Body, maxTaskArtifactObjectBytes+1))
+		resp.Body.Close()
+		if err != nil {
+			return nil, "", err
+		}
+		stableURL, err := BuildTaskArtifactContentURL(task.TaskID, key)
+		if err != nil {
+			return nil, "", err
+		}
+		item["output_url"] = stableURL
+		if firstURL == "" {
+			firstURL = stableURL
+		}
+		_ = ref
+	}
+	if firstURL == "" {
+		return nil, "", fmt.Errorf("image batch has no successful output URL")
+	}
+	rewritten, err := common.Marshal(payload)
+	return rewritten, firstURL, err
 }
 
 func redactVideoResponseBody(body []byte) []byte {

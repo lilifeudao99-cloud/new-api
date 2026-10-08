@@ -90,7 +90,22 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 		}
 		bodyObject, _ := requestContext.Body.(map[string]any)
 		bodyKind, _ := bodyObject["kind"].(string)
-		if pinned.Route.Type == pluginruntime.RouteTypeQuery && bodyKind != string(pluginruntime.BodyNone) || pinned.Route.Type != pluginruntime.RouteTypeQuery && bodyKind != string(pluginruntime.BodyJSON) {
+		allowedBodyKinds := pinned.Route.BodyKinds
+		if len(allowedBodyKinds) == 0 {
+			if pinned.Route.Type == pluginruntime.RouteTypeQuery {
+				allowedBodyKinds = []pluginruntime.BodyKind{pluginruntime.BodyNone}
+			} else {
+				allowedBodyKinds = []pluginruntime.BodyKind{pluginruntime.BodyJSON}
+			}
+		}
+		allowedBody := false
+		for _, allowed := range allowedBodyKinds {
+			if bodyKind == string(allowed) {
+				allowedBody = true
+				break
+			}
+		}
+		if !allowedBody {
 			logger.LogWarn(
 				c,
 				"task_plugin subsystem=route event=prepare_rejected generation=%d plugin=%q stage=request_decode reason=body_kind_mismatch body_kind=%q",
@@ -98,7 +113,7 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 				pinned.Plugin.Meta.Key,
 				bodyKind,
 			)
-			detail := "this route requires a JSON body"
+			detail := "this route does not accept the supplied request body"
 			if pinned.Route.Type == pluginruntime.RouteTypeQuery {
 				detail = "unsupported request body for this operation"
 			}

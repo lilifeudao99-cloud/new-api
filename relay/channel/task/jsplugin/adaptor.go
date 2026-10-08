@@ -342,17 +342,21 @@ func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
 	}
 	limit := maxInlineFileBytes()
 	var total int64
-	return replaceJSONFilePlaceholders(cloned, form, limit, &total)
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return replaceJSONFilePlaceholders(ctx, cloned, form, limit, &total)
 }
 
-func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, total *int64) (any, error) {
+func replaceJSONFilePlaceholders(ctx context.Context, value any, form *multipart.Form, limit int64, total *int64) (any, error) {
 	switch typed := value.(type) {
 	case map[string]any:
 		if _, isPlaceholder := typed["__fileRef"]; isPlaceholder {
-			return encodeFilePlaceholder(typed, form, limit, total)
+			return encodeFilePlaceholder(ctx, typed, form, limit, total)
 		}
 		for key, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(ctx, item, form, limit, total)
 			if err != nil {
 				return nil, err
 			}
@@ -361,7 +365,7 @@ func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, t
 		return typed, nil
 	case []any:
 		for index, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(ctx, item, form, limit, total)
 			if err != nil {
 				return nil, err
 			}
@@ -373,7 +377,7 @@ func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, t
 	}
 }
 
-func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
+func encodeFilePlaceholder(ctx context.Context, placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
 	for key := range placeholder {
 		switch key {
 		case "__fileRef", "encoding", "mimeType", "maxBytes":
@@ -386,8 +390,8 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 		return "", fmt.Errorf("unknown file reference %q", ref)
 	}
 	encoding, _ := placeholder["encoding"].(string)
-	if encoding != "base64" && encoding != "dataUrl" {
-		return "", fmt.Errorf("file placeholder encoding must be \"base64\" or \"dataUrl\"")
+	if encoding != "base64" && encoding != "dataUrl" && encoding != "tos_url" {
+		return "", fmt.Errorf("file placeholder encoding must be \"base64\", \"dataUrl\", or \"tos_url\"")
 	}
 	if form == nil {
 		return "", fmt.Errorf("unknown file reference %q", ref)
@@ -427,6 +431,23 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 		return "", fmt.Errorf("inlined files exceed the %d byte limit", limit)
 	}
 	*total += int64(len(data))
+	if encoding == "tos_url" {
+		if !service.GetTaskArtifactStore().Enabled() {
+			return "", fmt.Errorf("durable image input storage is not configured")
+		}
+		detected := http.DetectContentType(data)
+		switch detected {
+		case "image/png", "image/jpeg", "image/gif", "image/webp":
+		default:
+			return "", fmt.Errorf("uploaded input is not a supported image format")
+		}
+		objectName, keyErr := common.GenerateRandomCharsKey(40)
+		if keyErr != nil {
+			return "", keyErr
+		}
+		mimeType := detected
+		return service.GetTaskArtifactStore().PersistInput(ctx, objectName, mimeType, bytes.NewReader(data))
+	}
 	encoded := base64.StdEncoding.EncodeToString(data)
 	if encoding == "base64" {
 		return encoded, nil
@@ -610,7 +631,100 @@ func (a *TaskAdaptor) FetchTask(baseURL, key string, task *model.Task, proxy str
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, value)
+	resp, err := a.doFetchDescriptor(baseURL, proxy, value)
+	if err != nil || a.plugin.Meta.Key != "image-batch" || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, err
+	}
+	return a.fetchImageBatchPages(ctx, baseURL, proxy, resp)
+}
+
+func (a *TaskAdaptor) fetchImageBatchPages(ctx map[string]any, baseURL, proxy string, first *http.Response) (*http.Response, error) {
+	const maxPages = 20
+	const maxBytes = 32 << 20
+	type page struct {
+		Data       []any  `json:"data"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	}
+	readPage := func(resp *http.Response) ([]byte, page, error) {
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return nil, page{}, err
+		}
+		if len(body) > maxBytes {
+			return nil, page{}, fmt.Errorf("image batch items response exceeds %d bytes", maxBytes)
+		}
+		var decoded page
+		if err = common.Unmarshal(body, &decoded); err != nil {
+			return nil, page{}, err
+		}
+		return body, decoded, nil
+	}
+	firstBody, current, err := readPage(first)
+	if err != nil {
+		return nil, err
+	}
+	totalBytes := len(firstBody)
+	if !current.HasMore {
+		body, marshalErr := common.Marshal(map[string]any{"object": "list", "data": current.Data, "next_cursor": "", "has_more": false})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		first.Body = io.NopCloser(bytes.NewReader(body))
+		first.ContentLength = int64(len(body))
+		first.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		return first, nil
+	}
+	all := append([]any(nil), current.Data...)
+	cursor := strings.TrimSpace(current.NextCursor)
+	if cursor == "" {
+		return nil, fmt.Errorf("image batch pagination omitted next_cursor")
+	}
+	seen := map[string]bool{cursor: true}
+	for pages := 1; current.HasMore && pages < maxPages; pages++ {
+		ctx["cursor"] = cursor
+		descriptor, hookErr := a.plugin.Engine.Call(context.Background(), "buildQueryRequest", ctx)
+		if hookErr != nil {
+			return nil, hookErr
+		}
+		resp, fetchErr := a.doFetchDescriptor(baseURL, proxy, descriptor)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return resp, nil
+		}
+		body, decoded, pageErr := readPage(resp)
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		totalBytes += len(body)
+		if totalBytes > maxBytes || len(all)+len(decoded.Data) > 2000 {
+			return nil, fmt.Errorf("image batch items response exceeds %d bytes", maxBytes)
+		}
+		all = append(all, decoded.Data...)
+		current = decoded
+		if !current.HasMore {
+			break
+		}
+		cursor = strings.TrimSpace(current.NextCursor)
+		if cursor == "" || seen[cursor] {
+			return nil, fmt.Errorf("image batch pagination cursor is empty or repeated")
+		}
+		seen[cursor] = true
+		if pages == maxPages-1 {
+			return nil, fmt.Errorf("image batch pagination exceeded %d pages", maxPages)
+		}
+	}
+	aggregated, err := common.Marshal(map[string]any{"object": "list", "data": all, "next_cursor": "", "has_more": false})
+	if err != nil {
+		return nil, err
+	}
+	first.Body = io.NopCloser(bytes.NewReader(aggregated))
+	first.ContentLength = int64(len(aggregated))
+	first.Header.Set("Content-Length", fmt.Sprint(len(aggregated)))
+	return first, nil
 }
 
 func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, value any) (*http.Response, error) {

@@ -9,19 +9,21 @@ import (
 
 func TestValidateTaskArtifactStoreConfig(t *testing.T) {
 	valid := TaskArtifactStoreConfig{
-		Mode:                TaskArtifactStoreModeS3,
-		S3Endpoint:          "https://objects.example.com/storage",
-		S3Bucket:            "task-artifacts",
-		S3Region:            "us-east-1",
-		S3AccessKey:         "access-key",
-		S3SecretKey:         "secret-key",
-		S3Prefix:            "tasks/v1/",
-		S3PresignTTLSeconds: 900,
+		Mode:                     TaskArtifactStoreModeS3,
+		S3Endpoint:               "https://objects.example.com/storage",
+		S3Bucket:                 "task-artifacts",
+		S3Region:                 "us-east-1",
+		S3AccessKey:              "access-key",
+		S3SecretKey:              "secret-key",
+		S3Prefix:                 "tasks/v1/",
+		S3PresignTTLSeconds:      900,
+		S3InputPresignTTLSeconds: DefaultTaskArtifactInputPresignTTLSeconds,
 	}
 	require.NoError(t, ValidateTaskArtifactStoreConfig(valid))
 	require.NoError(t, ValidateTaskArtifactStoreConfig(TaskArtifactStoreConfig{
-		Mode:                TaskArtifactStoreModeUpstream,
-		S3PresignTTLSeconds: DefaultTaskArtifactStorePresignTTLSeconds,
+		Mode:                     TaskArtifactStoreModeUpstream,
+		S3PresignTTLSeconds:      DefaultTaskArtifactStorePresignTTLSeconds,
+		S3InputPresignTTLSeconds: DefaultTaskArtifactInputPresignTTLSeconds,
 	}))
 
 	tests := []struct {
@@ -54,7 +56,7 @@ func TestValidateTaskArtifactStoreConfig(t *testing.T) {
 	}
 }
 
-func TestLoadTaskArtifactStoreConfigFallsBackToUpstream(t *testing.T) {
+func TestLoadTaskArtifactStoreConfigValidatesAndLoads(t *testing.T) {
 	t.Setenv(TaskArtifactStoreModeEnv, "filesystem")
 	t.Setenv(TaskArtifactStoreS3PresignTTLEnv, "900")
 	config := LoadTaskArtifactStoreConfig()
@@ -70,7 +72,7 @@ func TestLoadTaskArtifactStoreConfigFallsBackToUpstream(t *testing.T) {
 	t.Setenv(TaskArtifactStoreS3PresignTTLEnv, "600")
 	config = LoadTaskArtifactStoreConfig()
 
-	assert.Equal(t, TaskArtifactStoreModeUpstream, config.Mode)
+	assert.Equal(t, TaskArtifactStoreModeS3, config.Mode)
 	assert.Equal(t, "https://objects.example.com", config.S3Endpoint)
 	assert.Equal(t, 600, config.S3PresignTTLSeconds)
 }
