@@ -84,7 +84,9 @@ function decodeEditBody(ctx) {
   const body = { prompt: first("prompt"), model: first("model") || ctx.model };
   for (const key of ["size", "quality", "response_format"]) if (first(key) !== undefined) body[key] = first(key);
   if (first("n") !== undefined && String(first("n")) !== "") body.n = Number(first("n"));
-  const files = Array.isArray(ctx.files) ? ctx.files : [];
+  // RouteRequestContext keeps multipart file references under body.files;
+  // older direct hook callers may still provide the legacy top-level field.
+  const files = Array.isArray(ctx.body.files) ? ctx.body.files : (Array.isArray(ctx.files) ? ctx.files : []);
   const images = files.filter(function (file) { return file && (file.field === "image" || file.field === "images"); });
   if (images.length) body.images = images.map(function (file) { return { __fileRef: file.ref, encoding: "tos_url", mimeType: file.mimeType || "application/octet-stream" }; });
   return body;

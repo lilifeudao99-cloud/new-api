@@ -77,7 +77,6 @@ func TestImageBatchMultipartEditDecoderUsesHostFileReferences(t *testing.T) {
 	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
 		"model": "nano-banana-pro",
 		"body":  map[string]any{"kind": "multipart", "fields": map[string]any{"prompt": []any{"make it sunset"}, "model": []any{"nano-banana-pro"}}, "files": []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png"}}},
-		"files": []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png", "size": 12}},
 	})
 	require.NoError(t, err)
 	encoded, err := common.Marshal(value)
