@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "image-batch", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -89,6 +89,28 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			registry := jsplugin.NewRegistry()
 			plugin, registerErr := registry.RegisterFactory(source, jsplugin.Options{Key: key})
 			require.NoError(t, registerErr)
+
+			if key == "image-batch" {
+				assert.Contains(t, plugin.Meta.Models, "gpt-image-2")
+				assert.Contains(t, plugin.Meta.Models, "gpt-image-2.5-flare")
+				assert.Contains(t, plugin.Meta.Models, "gpt-image-2.5-sunburst")
+				assert.Contains(t, plugin.Meta.Models, "nano-banana-2")
+				assert.Contains(t, plugin.Meta.Models, "nano-banana-pro")
+				for _, route := range []struct {
+					method string
+					path   string
+				}{
+					{method: "POST", path: "/v1/image-batches/generations"},
+					{method: "POST", path: "/v1/image-batches/edits"},
+					{method: "GET", path: "/v1/image-batches/:batch_id"},
+					{method: "GET", path: "/v1/image-batches/:batch_id/items"},
+				} {
+					binding, found := registry.Generation().LookupDeclaredRoute(route.method, route.path)
+					require.True(t, found, route.method+" "+route.path)
+					assert.Same(t, plugin, binding.Plugin)
+				}
+				return
+			}
 
 			var responsesClaim jsplugin.ProtocolClaim
 			foundResponses := false

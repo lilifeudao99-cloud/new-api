@@ -1091,6 +1091,27 @@ func TestSubmitContextExposesOriginTasks(t *testing.T) {
 	assert.Equal(t, map[string]any{"id": "cgt-upstream-1"}, originTasks[0]["data"])
 }
 
+func TestSubmitContextForwardsOnlyIdempotencyHeader(t *testing.T) {
+	plugin, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:   &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example", ApiKey: "secret"},
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	}
+	adaptor.Init(info)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/image-batches/generations", nil)
+	c.Request.Header.Set("Idempotency-Key", "client-batch-key-123")
+	c.Request.Header.Set("Cookie", "must-not-forward")
+
+	ctx := adaptor.submitContext(c, info)
+	headers, ok := ctx["requestHeaders"].(map[string]string)
+	require.True(t, ok)
+	assert.Equal(t, "client-batch-key-123", headers["Idempotency-Key"])
+	assert.NotContains(t, headers, "Cookie")
+}
+
 func TestSubmitContextOmitsOriginTasksWhenEmpty(t *testing.T) {
 	plugin, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
 	require.NoError(t, err)
