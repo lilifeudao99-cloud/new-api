@@ -1,24 +1,19 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/QuantumNous/new-api/types"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/gin-gonic/gin"
+	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
+	"github.com/volcengine/ve-tos-golang-sdk/v2/tos/enum"
 )
 
 // StoredArtifactRef describes a persisted artifact object. Object keys remain
@@ -61,8 +56,7 @@ func (disabledArtifactStore) Serve(*gin.Context, *model.Task, *StoredArtifactRef
 
 type s3ArtifactStore struct {
 	config system_setting.TaskArtifactStoreConfig
-	signer *v4.Signer
-	client *http.Client
+	client *tos.ClientV2
 }
 
 var taskArtifactStore TaskArtifactStore = &disabledArtifactStore{}
@@ -70,34 +64,16 @@ var taskArtifactStore TaskArtifactStore = &disabledArtifactStore{}
 func init() {
 	config := system_setting.LoadTaskArtifactStoreConfig()
 	if config.Mode == system_setting.TaskArtifactStoreModeS3 {
-		taskArtifactStore = &s3ArtifactStore{config: config, signer: v4.NewSigner(), client: &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+		client, err := tos.NewClientV2(config.S3Endpoint, tos.WithRegion(config.S3Region), tos.WithCredentials(tos.NewStaticCredentials(config.S3AccessKey, config.S3SecretKey)))
+		if err == nil {
+			taskArtifactStore = &s3ArtifactStore{config: config, client: client}
+		}
 	}
 }
 
 func GetTaskArtifactStore() TaskArtifactStore { return taskArtifactStore }
 
 func (s *s3ArtifactStore) Enabled() bool { return true }
-
-func (s *s3ArtifactStore) objectURL(key string) (string, error) {
-	endpoint, err := url.Parse(s.config.S3Endpoint)
-	if err != nil {
-		return "", err
-	}
-	segments := []string{s.config.S3Bucket}
-	if prefix := strings.Trim(s.config.S3Prefix, "/"); prefix != "" {
-		segments = append(segments, prefix)
-	}
-	segments = append(segments, strings.TrimLeft(key, "/"))
-	encoded := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		encoded = append(encoded, url.PathEscape(segment))
-	}
-	base := strings.TrimRight(endpoint.Path, "/")
-	baseRaw := strings.TrimRight(endpoint.EscapedPath(), "/")
-	endpoint.Path = base + "/" + strings.Join(segments, "/")
-	endpoint.RawPath = baseRaw + "/" + strings.Join(encoded, "/")
-	return endpoint.String(), nil
-}
 
 func (s *s3ArtifactStore) put(ctx context.Context, key, mimeType string, content io.Reader) (int64, error) {
 	data, err := io.ReadAll(io.LimitReader(content, maxTaskArtifactObjectBytes+1))
@@ -107,31 +83,12 @@ func (s *s3ArtifactStore) put(ctx context.Context, key, mimeType string, content
 	if int64(len(data)) > maxTaskArtifactObjectBytes {
 		return 0, fmt.Errorf("artifact exceeds %d byte limit", maxTaskArtifactObjectBytes)
 	}
-	objectURL, err := s.objectURL(key)
-	if err != nil {
-		return 0, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, objectURL, bytes.NewReader(data))
-	if err != nil {
-		return 0, err
-	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	req.Header.Set("Content-Type", mimeType)
-	payloadHash := sha256.Sum256(data)
-	credentials := aws.Credentials{AccessKeyID: s.config.S3AccessKey, SecretAccessKey: s.config.S3SecretKey}
-	if err = s.signer.SignHTTP(ctx, credentials, req, hex.EncodeToString(payloadHash[:]), "s3", s.config.S3Region, time.Now()); err != nil {
-		return 0, err
-	}
-	resp, err := s.client.Do(req)
+	_, err = s.client.PutObjectV2(ctx, &tos.PutObjectV2Input{PutObjectBasicInput: tos.PutObjectBasicInput{Bucket: s.config.S3Bucket, Key: s.objectKey(key), ContentLength: int64(len(data)), ContentType: mimeType}, Content: strings.NewReader(string(data))})
 	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("object storage PUT returned HTTP %d", resp.StatusCode)
+		return 0, fmt.Errorf("object storage PUT failed: %w", err)
 	}
 	return int64(len(data)), nil
 }
@@ -141,20 +98,19 @@ func (s *s3ArtifactStore) presignGet(ctx context.Context, key string) (string, e
 }
 
 func (s *s3ArtifactStore) presignGetTTL(ctx context.Context, key string, ttlSeconds int) (string, error) {
-	objectURL, err := s.objectURL(key)
+	result, err := s.client.PreSignedURL(&tos.PreSignedURLInput{HTTPMethod: enum.HttpMethodGet, Bucket: s.config.S3Bucket, Key: s.objectKey(key), Expires: int64(ttlSeconds)})
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
-	if err != nil {
-		return "", err
+	return result.SignedUrl, nil
+}
+
+func (s *s3ArtifactStore) objectKey(key string) string {
+	prefix := strings.Trim(s.config.S3Prefix, "/")
+	if prefix == "" {
+		return strings.TrimLeft(key, "/")
 	}
-	query := req.URL.Query()
-	query.Set("X-Amz-Expires", fmt.Sprint(ttlSeconds))
-	req.URL.RawQuery = query.Encode()
-	credentials := aws.Credentials{AccessKeyID: s.config.S3AccessKey, SecretAccessKey: s.config.S3SecretKey}
-	signed, _, err := s.signer.PresignHTTP(ctx, credentials, req, "UNSIGNED-PAYLOAD", "s3", s.config.S3Region, time.Now())
-	return signed, err
+	return prefix + "/" + strings.TrimLeft(key, "/")
 }
 
 func (s *s3ArtifactStore) Persist(ctx context.Context, task *model.Task, artifact types.TaskArtifact, content io.Reader) (*StoredArtifactRef, error) {
