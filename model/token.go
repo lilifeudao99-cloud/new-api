@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"
@@ -35,8 +36,11 @@ type Token struct {
 const CanvasIntegrationTokenName = "ailili-canvas"
 
 // EnsureCanvasIntegrationToken returns the stable server-side token used by
-// the TapCanvas integration. The user row is locked while checking/creating
-// so concurrent SSO callbacks cannot create duplicate canvas tokens.
+// the TapCanvas integration. It keeps the managed token in Auto mode and
+// synchronizes the currently configured ordered Auto groups, so newly enabled
+// model groups become available to Canvas users without changing their wallet
+// or other API tokens. The user row is locked while checking/creating so
+// concurrent SSO callbacks cannot create duplicate canvas tokens.
 func EnsureCanvasIntegrationToken(userID int) (*Token, bool, error) {
 	if userID <= 0 {
 		return nil, false, errors.New("user id 无效")
@@ -57,6 +61,31 @@ func EnsureCanvasIntegrationToken(userID int) (*Token, bool, error) {
 				(!token.UnlimitedQuota && token.RemainQuota <= 0) {
 				return ErrTokenInvalid
 			}
+			autoGroups := setting.GetAutoGroups()
+			updated := Token{
+				Group:           "auto",
+				CrossGroupRetry: true,
+			}
+			if err := updated.SetAutoGroups(autoGroups); err != nil {
+				return err
+			}
+			if token.Group != updated.Group || !token.CrossGroupRetry || token.AutoGroups != updated.AutoGroups {
+				if common.RedisEnabled && common.RDB != nil {
+					if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+						return err
+					}
+				}
+				if err := tx.Model(&token).Updates(map[string]any{
+					"group":             updated.Group,
+					"cross_group_retry": updated.CrossGroupRetry,
+					"auto_groups":       updated.AutoGroups,
+				}).Error; err != nil {
+					return err
+				}
+				token.Group = updated.Group
+				token.CrossGroupRetry = updated.CrossGroupRetry
+				token.AutoGroups = updated.AutoGroups
+			}
 			return nil
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
@@ -75,9 +104,11 @@ func EnsureCanvasIntegrationToken(userID int) (*Token, bool, error) {
 			ExpiredTime:        -1,
 			UnlimitedQuota:     true,
 			ModelLimitsEnabled: false,
-			// An empty group inherits the user's current group in TokenAuth.
-			Group:           "",
-			CrossGroupRetry: false,
+			Group:              "auto",
+			CrossGroupRetry:    true,
+		}
+		if err := token.SetAutoGroups(setting.GetAutoGroups()); err != nil {
+			return err
 		}
 		if err := tx.Create(&token).Error; err != nil {
 			return err
