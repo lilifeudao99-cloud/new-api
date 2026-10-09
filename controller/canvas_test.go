@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/go-redis/redis/v8"
@@ -65,6 +66,9 @@ func TestRequireCanvasIntegrationSecretBearer(t *testing.T) {
 }
 
 func TestCanvasIntegrationTokenDatabases(t *testing.T) {
+	originalAutoGroups := setting.AutoGroups2JsonString()
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["OpenAI-gpt","imge-2-4k","video","Nano Banana"]`))
+	t.Cleanup(func() { require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups)) })
 	for _, database := range []struct {
 		name string
 		env  string
@@ -112,10 +116,11 @@ func TestCanvasIntegrationTokenDatabases(t *testing.T) {
 			token, created, err := model.EnsureCanvasIntegrationToken(user.Id)
 			require.NoError(t, err)
 			assert.True(t, created)
-			assert.Empty(t, token.Group, "an empty token group inherits the user's current group")
+			assert.Equal(t, "auto", token.Group)
 			assert.Equal(t, user.Id, token.UserId)
 			assert.True(t, token.UnlimitedQuota)
-			assert.False(t, token.CrossGroupRetry)
+			assert.True(t, token.CrossGroupRetry)
+			assert.JSONEq(t, `["OpenAI-gpt","imge-2-4k","video","Nano Banana"]`, token.AutoGroups)
 
 			// A user may restrict their dedicated key. Reuse must not reset those choices.
 			require.NoError(t, db.Model(token).Updates(map[string]any{"group": "paid", "model_limits_enabled": true, "model_limits": "allowed-model"}).Error)
@@ -123,7 +128,9 @@ func TestCanvasIntegrationTokenDatabases(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, created)
 			assert.Equal(t, token.Id, reused.Id)
-			assert.Equal(t, "paid", reused.Group)
+			assert.Equal(t, "auto", reused.Group)
+			assert.True(t, reused.CrossGroupRetry)
+			assert.JSONEq(t, `["OpenAI-gpt","imge-2-4k","video","Nano Banana"]`, reused.AutoGroups)
 			assert.True(t, reused.ModelLimitsEnabled)
 			assert.Equal(t, "allowed-model", reused.ModelLimits)
 
@@ -173,7 +180,7 @@ func TestCanvasSSOTicketLifecycle(t *testing.T) {
 	t.Setenv("CANVAS_PUBLIC_URL", "https://canvas.ailili.test")
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
 	user := model.User{Username: "ticket-user", Password: "test-only", Status: common.UserStatusEnabled}
 	require.NoError(t, db.Create(&user).Error)
 	previousDB, previousRedis, previousEnabled := model.DB, common.RDB, common.RedisEnabled
@@ -203,9 +210,10 @@ func TestCanvasSSOTicketLifecycle(t *testing.T) {
 			GetCanvasSSOLaunch(launch)
 			require.Equal(t, 200, launchResponse.Code)
 			var ticket struct {
-				Code        string `json:"code"`
-				RedirectURL string `json:"redirect_url"`
-				ExpiresIn   int    `json:"expires_in"`
+				Code               string `json:"code"`
+				RedirectURL        string `json:"redirect_url"`
+				ExpiresIn          int    `json:"expires_in"`
+				ProvisioningTicket string `json:"provisioning_ticket"`
 			}
 			require.NoError(t, common.Unmarshal(launchResponse.Body.Bytes(), &ticket))
 			require.NotEmpty(t, ticket.Code)
@@ -233,13 +241,46 @@ func TestCanvasSSOTicketLifecycle(t *testing.T) {
 				if attempt == 0 && !test.expire && !test.disable {
 					assert.Equal(t, 200, response.Code)
 					var identity struct {
-						User struct {
+						ProvisioningTicket string `json:"provisioning_ticket"`
+						User               struct {
 							ID int `json:"id"`
 						} `json:"user"`
 					}
 					require.NoError(t, common.Unmarshal(response.Body.Bytes(), &identity))
 					assert.Equal(t, user.Id, identity.User.ID)
+					assert.NotEmpty(t, identity.ProvisioningTicket)
 					assert.NotContains(t, response.Body.String(), ticket.Code)
+
+					arbitraryProfileBody, marshalErr := common.Marshal(map[string]any{"user_id": user.Id})
+					require.NoError(t, marshalErr)
+					arbitraryProfileResponse := httptest.NewRecorder()
+					arbitraryProfile, _ := gin.CreateTestContext(arbitraryProfileResponse)
+					arbitraryProfile.Request = httptest.NewRequest("POST", "/api/canvas/profile", strings.NewReader(string(arbitraryProfileBody)))
+					arbitraryProfile.Request.Header.Set("Content-Type", "application/json")
+					arbitraryProfile.Request.Header.Set("X-Canvas-Integration-Secret", "canvas-test-secret")
+					GetCanvasIntegrationProfile(arbitraryProfile)
+					assert.Equal(t, 400, arbitraryProfileResponse.Code, "the integration secret cannot select an arbitrary user")
+
+					profileBody, marshalErr := common.Marshal(map[string]string{"ticket": identity.ProvisioningTicket})
+					require.NoError(t, marshalErr)
+					profileResponse := httptest.NewRecorder()
+					profile, _ := gin.CreateTestContext(profileResponse)
+					profile.Request = httptest.NewRequest("POST", "/api/canvas/profile", strings.NewReader(string(profileBody)))
+					profile.Request.Header.Set("Content-Type", "application/json")
+					profile.Request.Header.Set("X-Canvas-Integration-Secret", "canvas-test-secret")
+					GetCanvasIntegrationProfile(profile)
+					assert.Equal(t, 200, profileResponse.Code)
+
+					keyBody, marshalErr := common.Marshal(map[string]string{"ticket": identity.ProvisioningTicket, "purpose": "canvas"})
+					require.NoError(t, marshalErr)
+					keyResponse := httptest.NewRecorder()
+					keyRequest, _ := gin.CreateTestContext(keyResponse)
+					keyRequest.Request = httptest.NewRequest("POST", "/api/canvas/key/ensure", strings.NewReader(string(keyBody)))
+					keyRequest.Request.Header.Set("Content-Type", "application/json")
+					keyRequest.Request.Header.Set("X-Canvas-Integration-Secret", "canvas-test-secret")
+					EnsureCanvasAPIKey(keyRequest)
+					assert.Equal(t, 200, keyResponse.Code)
+					assert.NotContains(t, keyResponse.Body.String(), identity.ProvisioningTicket)
 				} else {
 					assert.Equal(t, 401, response.Code)
 				}
