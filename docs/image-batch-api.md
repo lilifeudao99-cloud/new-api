@@ -30,7 +30,7 @@ Content-Type: multipart/form-data
 Idempotency-Key: 生成一个 8–128 字符的唯一值
 ```
 
-表单字段：`model`、`prompt`（必填）；`image` 可重复上传 1–10 张 PNG、JPEG、GIF 或 WebP 文件；`n`、`size`、`quality` 可选。文件先上传到私有 TOS，服务端向上游提交限时读取 URL，不会向客户返回该 URL。
+表单字段：`model`、`prompt`（必填）；图片可使用重复的 `image[]` 字段上传 1–10 张 PNG、JPEG、GIF 或 WebP 文件（也兼容 `image`、`image[0]`、`images[]` 等常见命名）；`n`、`size`、`quality` 可选。文件先上传到私有 TOS，服务端向上游提交限时读取 URL，不会向客户返回该 URL。
 
 也可在 JSON 请求中用 `images` 数组提交公开 HTTP(S) 图片地址；异步上游不接受原始文件或 data URL。
 

@@ -74,19 +74,23 @@ func TestImageBatchSubmitAndPollHooks(t *testing.T) {
 
 func TestImageBatchMultipartEditDecoderUsesHostFileReferences(t *testing.T) {
 	plugin := loadImageBatchPlugin(t)
-	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
-		"model": "nano-banana-pro",
-		"body":  map[string]any{"kind": "multipart", "fields": map[string]any{"prompt": []any{"make it sunset"}, "model": []any{"nano-banana-pro"}}, "files": []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png"}}},
-	})
-	require.NoError(t, err)
-	encoded, err := common.Marshal(value)
-	require.NoError(t, err)
-	var decoded map[string]any
-	require.NoError(t, common.Unmarshal(encoded, &decoded))
-	requestBody := decoded["requestBody"].(map[string]any)
-	image := requestBody["images"].([]any)[0].(map[string]any)
-	assert.Equal(t, "request_file:image", image["__fileRef"])
-	assert.Equal(t, "tos_url", image["encoding"])
+	for _, field := range []string{"image", "image[]", "image[0]", "images", "images[]", "images[1]"} {
+		t.Run(field, func(t *testing.T) {
+			value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
+				"model": "nano-banana-pro",
+				"body":  map[string]any{"kind": "multipart", "fields": map[string]any{"prompt": []any{"make it sunset"}, "model": []any{"nano-banana-pro"}}, "files": []any{map[string]any{"ref": "request_file:" + field, "field": field, "filename": "input.png", "mimeType": "image/png"}}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var decoded map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &decoded))
+			requestBody := decoded["requestBody"].(map[string]any)
+			image := requestBody["images"].([]any)[0].(map[string]any)
+			assert.Equal(t, "request_file:"+field, image["__fileRef"])
+			assert.Equal(t, "tos_url", image["encoding"])
+		})
+	}
 }
 
 func TestImageBatchPollRequestUsesCursor(t *testing.T) {

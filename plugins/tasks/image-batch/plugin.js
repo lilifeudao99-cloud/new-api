@@ -75,6 +75,12 @@ function validateImages(images) {
   }
 }
 
+function isImageUploadField(field) {
+  // Accept common multipart encodings: repeated `image`, `image[]`, indexed
+  // `image[0]`/`image[1]`, and the plural `images` equivalents.
+  return /^images?(?:\[\]|\[\d+\])?$/.test(String(field || ""));
+}
+
 function decodeEditBody(ctx) {
   if (!ctx.body) throw new Error("request body required");
   if (ctx.body.kind === "json") return ctx.body.value;
@@ -87,7 +93,7 @@ function decodeEditBody(ctx) {
   // RouteRequestContext keeps multipart file references under body.files;
   // older direct hook callers may still provide the legacy top-level field.
   const files = Array.isArray(ctx.body.files) ? ctx.body.files : (Array.isArray(ctx.files) ? ctx.files : []);
-  const images = files.filter(function (file) { return file && (file.field === "image" || file.field === "images"); });
+  const images = files.filter(function (file) { return file && isImageUploadField(file.field); });
   if (images.length) body.images = images.map(function (file) { return { __fileRef: file.ref, encoding: "tos_url", mimeType: file.mimeType || "application/octet-stream" }; });
   return body;
 }
