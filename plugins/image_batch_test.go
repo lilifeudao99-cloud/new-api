@@ -72,6 +72,78 @@ func TestImageBatchSubmitAndPollHooks(t *testing.T) {
 	assert.JSONEq(t, `{"taskId":"task-public-1","status":"SUCCESS","reason":"rejected","url":"https://cdn.example/image.png"}`, string(resultJSON))
 }
 
+func TestImageBatchDropsUnsupportedQualityField(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+		"model": "nano-banana-pro",
+		"body": map[string]any{"kind": "json", "value": map[string]any{
+			"model": "nano-banana-pro", "prompt": "test", "quality": "high",
+		}},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &decoded))
+	requestBody := decoded["requestBody"].(map[string]any)
+	assert.NotContains(t, requestBody, "quality")
+
+	submit, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+		"model":          "nano-banana-pro",
+		"action":         "image_generation",
+		"baseUrl":        "https://upstream.example",
+		"apiKey":         "upstream-key",
+		"requestBody":    requestBody,
+		"requestHeaders": map[string]string{"Idempotency-Key": "quality-drop-test"},
+	})
+	require.NoError(t, err)
+	submitJSON, err := common.Marshal(submit)
+	require.NoError(t, err)
+	var descriptor map[string]any
+	require.NoError(t, common.Unmarshal(submitJSON, &descriptor))
+	assert.NotContains(t, descriptor["body"].(map[string]any), "quality")
+}
+
+func TestImageBatchDropsUnsupportedQualityFieldFromEdit(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
+		"model": "nano-banana-pro",
+		"body": map[string]any{
+			"kind": "multipart",
+			"fields": map[string]any{
+				"prompt":  []any{"edit the reference"},
+				"model":   []any{"nano-banana-pro"},
+				"quality": []any{"high"},
+			},
+			"files": []any{map[string]any{
+				"ref": "request_file:reference", "field": "image[]", "filename": "input.png", "mimeType": "image/png",
+			}},
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &decoded))
+	requestBody := decoded["requestBody"].(map[string]any)
+	assert.NotContains(t, requestBody, "quality")
+
+	submit, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+		"model":          "nano-banana-pro",
+		"action":         "image_edit",
+		"baseUrl":        "https://upstream.example",
+		"apiKey":         "upstream-key",
+		"requestBody":    requestBody,
+		"requestHeaders": map[string]string{"Idempotency-Key": "quality-edit-test"},
+	})
+	require.NoError(t, err)
+	submitJSON, err := common.Marshal(submit)
+	require.NoError(t, err)
+	var descriptor map[string]any
+	require.NoError(t, common.Unmarshal(submitJSON, &descriptor))
+	assert.NotContains(t, descriptor["body"].(map[string]any), "quality")
+}
+
 func TestImageBatchMultipartEditDecoderUsesHostFileReferences(t *testing.T) {
 	plugin := loadImageBatchPlugin(t)
 	for _, field := range []string{"image", "image[]", "image[0]", "images", "images[]", "images[1]"} {
@@ -90,6 +162,157 @@ func TestImageBatchMultipartEditDecoderUsesHostFileReferences(t *testing.T) {
 			assert.Equal(t, "request_file:"+field, image["__fileRef"])
 			assert.Equal(t, "tos_url", image["encoding"])
 		})
+	}
+}
+
+func TestImageBatchResolutionAndAspectRatioNormalizeToSize(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	cases := []struct {
+		name        string
+		resolution  string
+		aspectRatio string
+		wantSize    string
+	}{
+		{name: "4k landscape", resolution: "4K", aspectRatio: "16:9", wantSize: "3840x2160"},
+		{name: "2k 4 by 3", resolution: "2K", aspectRatio: "4:3", wantSize: "2048x1536"},
+		{name: "1k square", resolution: "1K", aspectRatio: "1:1", wantSize: "1024x1024"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+				"model": "gpt-image-2",
+				"body": map[string]any{"kind": "json", "value": map[string]any{
+					"model": "gpt-image-2", "prompt": "test", "resolution": tc.resolution, "aspectRatio": tc.aspectRatio,
+				}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var decoded map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &decoded))
+			requestBody := decoded["requestBody"].(map[string]any)
+			assert.Equal(t, tc.wantSize, requestBody["size"])
+			assert.NotContains(t, requestBody, "resolution")
+			assert.NotContains(t, requestBody, "aspectRatio")
+		})
+	}
+}
+
+func TestImageBatchMultipartEditDecodesAspectRatioField(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeEdit"}, map[string]any{
+		"model": "nano-banana-2",
+		"body": map[string]any{
+			"kind":   "multipart",
+			"fields": map[string]any{"prompt": []any{"edit"}, "model": []any{"nano-banana-2"}, "resolution": []any{"4K"}, "aspectRatio": []any{"4:3"}},
+			"files":  []any{map[string]any{"ref": "request_file:image", "field": "image", "filename": "input.png", "mimeType": "image/png"}},
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &decoded))
+	requestBody := decoded["requestBody"].(map[string]any)
+	assert.Equal(t, "4800x3584", requestBody["size"])
+	assert.NotContains(t, requestBody, "resolution")
+	assert.NotContains(t, requestBody, "aspectRatio")
+}
+
+func TestNanoBananaResolutionAndAspectRatioUseOfficialModelDimensions(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	cases := []struct {
+		model       string
+		resolution  string
+		aspectRatio string
+		wantSize    string
+	}{
+		{model: "nano-banana-2", resolution: "1K", aspectRatio: "4:3", wantSize: "1200x896"},
+		{model: "nano-banana-2", resolution: "2K", aspectRatio: "4:3", wantSize: "2400x1792"},
+		{model: "nano-banana-2.1", resolution: "4K", aspectRatio: "16:9", wantSize: "5504x3072"},
+		{model: "nano-banana-2.1", resolution: "4K", aspectRatio: "1:8", wantSize: "1536x12288"},
+		{model: "nano-banana-pro", resolution: "4K", aspectRatio: "4:3", wantSize: "4800x3584"},
+		{model: "nano-banana-pro", resolution: "2K", aspectRatio: "21:9", wantSize: "3168x1344"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.resolution+"/"+tc.aspectRatio, func(t *testing.T) {
+			value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+				"model": tc.model,
+				"body": map[string]any{"kind": "json", "value": map[string]any{
+					"model": tc.model, "prompt": "test", "resolution": tc.resolution, "aspectRatio": tc.aspectRatio,
+				}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var decoded map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &decoded))
+			requestBody := decoded["requestBody"].(map[string]any)
+			assert.Equal(t, tc.wantSize, requestBody["size"])
+			assert.NotContains(t, requestBody, "resolution")
+			assert.NotContains(t, requestBody, "aspectRatio")
+		})
+	}
+}
+
+func TestNanoBananaProRejectsFlashOnlyAspectRatios(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	_, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+		"model": "nano-banana-pro",
+		"body": map[string]any{"kind": "json", "value": map[string]any{
+			"model": "nano-banana-pro", "prompt": "test", "resolution": "4K", "aspectRatio": "1:8",
+		}},
+	})
+	assert.Error(t, err)
+}
+
+func TestNanoBananaLowestAndHighestResolutionBounds(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	cases := []struct {
+		model       string
+		resolution  string
+		aspectRatio string
+		wantSize    string
+	}{
+		// Nano Banana 2 / 2.1 support the additional 1:8 and 8:1 extremes.
+		{model: "nano-banana-2", resolution: "1K", aspectRatio: "1:8", wantSize: "384x3072"},
+		{model: "nano-banana-2", resolution: "4K", aspectRatio: "8:1", wantSize: "12288x1536"},
+		{model: "nano-banana-2.1", resolution: "1K", aspectRatio: "8:1", wantSize: "3072x384"},
+		{model: "nano-banana-2.1", resolution: "4K", aspectRatio: "1:8", wantSize: "1536x12288"},
+		// Pro's documented extremes are 9:16 and 21:9; it excludes 1:8/8:1.
+		{model: "nano-banana-pro", resolution: "1K", aspectRatio: "9:16", wantSize: "768x1376"},
+		{model: "nano-banana-pro", resolution: "4K", aspectRatio: "21:9", wantSize: "6336x2688"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.resolution+"/"+tc.aspectRatio, func(t *testing.T) {
+			value, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+				"model": tc.model,
+				"body": map[string]any{"kind": "json", "value": map[string]any{
+					"model": tc.model, "prompt": "boundary validation", "resolution": tc.resolution, "aspectRatio": tc.aspectRatio,
+				}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var decoded map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &decoded))
+			requestBody := decoded["requestBody"].(map[string]any)
+			assert.Equal(t, tc.wantSize, requestBody["size"])
+		})
+	}
+}
+
+func TestImageBatchRejectsUnsupportedResolutionAndSizeConflict(t *testing.T) {
+	plugin := loadImageBatchPlugin(t)
+	for _, body := range []map[string]any{
+		{"model": "gpt-image-2", "prompt": "test", "resolution": "8K", "aspectRatio": "16:9"},
+		{"model": "gpt-image-2", "prompt": "test", "resolution": "4K", "aspectRatio": "16:9", "size": "2048x1536"},
+		{"model": "gpt-image-2.5-flare", "prompt": "test", "resolution": "2K", "aspectRatio": "4:3"},
+	} {
+		_, err := plugin.Engine.CallPath(t.Context(), "native", []string{"decodeGeneration"}, map[string]any{
+			"model": "gpt-image-2", "body": map[string]any{"kind": "json", "value": body},
+		})
+		assert.Error(t, err)
 	}
 }
 

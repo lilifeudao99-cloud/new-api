@@ -13,9 +13,9 @@ export const meta = {
     en: "Asynchronous image generation and editing batches",
     zh: "异步文生图与图生图批次",
   },
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "New API" },
-  models: ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "nano-banana-2", "nano-banana-pro"],
+  models: ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "nano-banana-2", "nano-banana-2.1", "nano-banana-pro"],
   fetchMode: "per_task",
   usageSchema: {
     image_count: {
@@ -35,6 +35,118 @@ export const meta = {
 };
 
 const IMAGE_MODELS = new Set(meta.models);
+const IMAGE_DIMENSION_MODELS = new Set(["nano-banana-2", "nano-banana-2.1", "nano-banana-pro", "gpt-image-2"]);
+
+// The async batch API accepts an OpenAI-compatible WIDTHxHEIGHT `size`.
+// Translate the public resolution/aspectRatio options using each model's
+// documented dimensions. Nano Banana 2 and 2.1 use the Gemini 3.1 Flash Image
+// table; Pro uses the Gemini 3 Pro Image table. Keep GPT Image's profile
+// separate because its size contract is not the Gemini table.
+const IMAGE_RESOLUTIONS = new Set(["1K", "2K", "4K"]);
+const GPT_IMAGE_ASPECT_RATIOS = new Set(["21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]);
+const GPT_IMAGE_SIZE_PROFILES_4K = {
+  "21:9": "3696x1584",
+  "16:9": "3840x2160",
+  "3:2": "3504x2336",
+  "4:3": "3264x2448",
+  "5:4": "3200x2560",
+  "1:1": "2880x2880",
+  "4:5": "2560x3200",
+  "3:4": "2448x3264",
+  "2:3": "2336x3504",
+  "9:16": "2160x3840",
+};
+
+const NANO_BANANA_FLASH_SIZES = {
+  "1:1": { "1K": "1024x1024", "2K": "2048x2048", "4K": "4096x4096" },
+  "1:4": { "1K": "512x2048", "2K": "1024x4096", "4K": "2048x8192" },
+  "1:8": { "1K": "384x3072", "2K": "768x6144", "4K": "1536x12288" },
+  "2:3": { "1K": "848x1264", "2K": "1696x2528", "4K": "3392x5056" },
+  "3:2": { "1K": "1264x848", "2K": "2528x1696", "4K": "5056x3392" },
+  "3:4": { "1K": "896x1200", "2K": "1792x2400", "4K": "3584x4800" },
+  "4:1": { "1K": "2048x512", "2K": "4096x1024", "4K": "8192x2048" },
+  "4:3": { "1K": "1200x896", "2K": "2400x1792", "4K": "4800x3584" },
+  "4:5": { "1K": "928x1152", "2K": "1856x2304", "4K": "3712x4608" },
+  "5:4": { "1K": "1152x928", "2K": "2304x1856", "4K": "4608x3712" },
+  "8:1": { "1K": "3072x384", "2K": "6144x768", "4K": "12288x1536" },
+  "9:16": { "1K": "768x1376", "2K": "1536x2752", "4K": "3072x5504" },
+  "16:9": { "1K": "1376x768", "2K": "2752x1536", "4K": "5504x3072" },
+  "21:9": { "1K": "1584x672", "2K": "3168x1344", "4K": "6336x2688" },
+};
+
+const NANO_BANANA_PRO_SIZES = {
+  "1:1": { "1K": "1024x1024", "2K": "2048x2048", "4K": "4096x4096" },
+  "2:3": { "1K": "848x1264", "2K": "1696x2528", "4K": "3392x5056" },
+  "3:2": { "1K": "1264x848", "2K": "2528x1696", "4K": "5056x3392" },
+  "3:4": { "1K": "896x1200", "2K": "1792x2400", "4K": "3584x4800" },
+  "4:3": { "1K": "1200x896", "2K": "2400x1792", "4K": "4800x3584" },
+  "4:5": { "1K": "928x1152", "2K": "1856x2304", "4K": "3712x4608" },
+  "5:4": { "1K": "1152x928", "2K": "2304x1856", "4K": "4608x3712" },
+  "9:16": { "1K": "768x1376", "2K": "1536x2752", "4K": "3072x5504" },
+  "16:9": { "1K": "1376x768", "2K": "2752x1536", "4K": "5504x3072" },
+  "21:9": { "1K": "1584x672", "2K": "3168x1344", "4K": "6336x2688" },
+};
+
+function normalizeResolution(value) {
+  const resolution = trimmed(value).toUpperCase();
+  if (!IMAGE_RESOLUTIONS.has(resolution)) throw new Error("resolution must be 1K, 2K, or 4K");
+  return resolution;
+}
+
+function normalizeAspectRatio(value, model) {
+  const aspectRatio = trimmed(value);
+  const profile = model === "nano-banana-pro" ? NANO_BANANA_PRO_SIZES : NANO_BANANA_FLASH_SIZES;
+  const supported = model === "gpt-image-2" ? GPT_IMAGE_ASPECT_RATIOS.has(aspectRatio) : !!profile[aspectRatio];
+  if (!supported) throw new Error("aspectRatio is not supported by the selected image model");
+  return aspectRatio;
+}
+
+function imageSizeForOptions(model, resolution, aspectRatio) {
+  if (model === "nano-banana-2" || model === "nano-banana-2.1") {
+    const dimensions = NANO_BANANA_FLASH_SIZES[aspectRatio];
+    if (!dimensions) throw new Error("aspectRatio is not supported by the selected image model");
+    return dimensions[resolution];
+  }
+  if (model === "nano-banana-pro") {
+    const dimensions = NANO_BANANA_PRO_SIZES[aspectRatio];
+    if (!dimensions) throw new Error("aspectRatio is not supported by the selected image model");
+    return dimensions[resolution];
+  }
+  const base = GPT_IMAGE_SIZE_PROFILES_4K[aspectRatio];
+  if (!base) throw new Error("unsupported aspect ratio");
+  if (resolution === "4K") return base;
+  const match = /^(\d+)x(\d+)$/.exec(base);
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const targetLongEdge = resolution === "2K" ? 2048 : 1024;
+  const scale = targetLongEdge / Math.max(width, height);
+  return Math.round(width * scale) + "x" + Math.round(height * scale);
+}
+
+function normalizeImageOptions(body, modelHint) {
+  const normalized = Object.assign({}, body || {});
+  // The asynchronous upstream batch API does not accept the OpenAI-style
+  // quality field.  Keep accepting it from older clients for compatibility,
+  // but never persist or forward it to the upstream request.
+  delete normalized.quality;
+  const hasResolution = normalized.resolution !== undefined;
+  const hasAspectRatio = normalized.aspectRatio !== undefined;
+  if (!hasResolution && !hasAspectRatio) return normalized;
+
+  const model = trimmed(normalized.model || modelHint);
+  if (!IMAGE_DIMENSION_MODELS.has(model)) throw new Error("resolution and aspectRatio are supported only for nano-banana-2, nano-banana-2.1, nano-banana-pro, and gpt-image-2");
+
+  const resolution = hasResolution ? normalizeResolution(normalized.resolution) : "1K";
+  const aspectRatio = hasAspectRatio ? normalizeAspectRatio(normalized.aspectRatio, model) : "1:1";
+  const derivedSize = imageSizeForOptions(model, resolution, aspectRatio);
+  if (normalized.size !== undefined && normalized.size !== derivedSize) {
+    throw new Error("size conflicts with resolution/aspectRatio; provide either size or resolution plus aspectRatio");
+  }
+  normalized.size = derivedSize;
+  delete normalized.resolution;
+  delete normalized.aspectRatio;
+  return normalized;
+}
 
 function trimmed(value) {
   return String(value || "").trim();
@@ -55,15 +167,14 @@ function validateCommon(body) {
   if (!trimmed(body.prompt)) throw new Error("prompt is required");
   if (body.n !== undefined && (!Number.isInteger(body.n) || body.n < 1 || body.n > 64)) throw new Error("n must be an integer between 1 and 64");
   if (body.response_format !== undefined && body.response_format !== "url") throw new Error("response_format must be url for asynchronous image batches");
-  if (body.quality !== undefined && !["auto", "high", "low"].includes(body.quality)) throw new Error("quality must be auto, high, or low");
   if (body.size !== undefined && (typeof body.size !== "string" || !/^\d{2,5}x\d{2,5}$/.test(body.size))) throw new Error("size must use WIDTHxHEIGHT");
 }
 
 function decodeSubmit(ctx, action) {
   if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
-  const body = ctx.body.value;
+  const model = requestModel(ctx, ctx.body.value);
+  const body = normalizeImageOptions(ctx.body.value, model);
   validateCommon(body);
-  const model = requestModel(ctx, body);
   return { kind: "submit", model: model, action: action, requestBody: Object.assign({}, body, { model: model }) };
 }
 
@@ -88,7 +199,7 @@ function decodeEditBody(ctx) {
   const fields = objectValue(ctx.body.fields);
   const first = function (name) { const value = fields[name]; return Array.isArray(value) ? value[0] : value; };
   const body = { prompt: first("prompt"), model: first("model") || ctx.model };
-  for (const key of ["size", "quality", "response_format"]) if (first(key) !== undefined) body[key] = first(key);
+  for (const key of ["size", "resolution", "aspectRatio", "response_format"]) if (first(key) !== undefined) body[key] = first(key);
   if (first("n") !== undefined && String(first("n")) !== "") body.n = Number(first("n"));
   // RouteRequestContext keeps multipart file references under body.files;
   // older direct hook callers may still provide the legacy top-level field.
@@ -103,9 +214,10 @@ export const native = {
     return decodeSubmit(ctx, "image_generation");
   },
   decodeEdit: function (ctx) {
-    const body = decodeEditBody(ctx);
+    const rawBody = decodeEditBody(ctx);
+    const model = requestModel(ctx, rawBody);
+    const body = normalizeImageOptions(rawBody, model);
     validateCommon(body);
-    const model = requestModel(ctx, body);
     const hasImages = Array.isArray(body.images);
     const hasTasks = Array.isArray(body.tasks);
     if (hasImages === hasTasks) throw new Error("exactly one of images or tasks is required");
@@ -219,7 +331,7 @@ function imageText(ctx) {
 }
 
 export function buildSubmitRequest(ctx) {
-  const body = Object.assign({}, ctx.requestBody || {});
+  const body = normalizeImageOptions(ctx.requestBody || {}, ctx.model);
   const incoming = ctx.requestHeaders || {};
   const idempotencyKey = trimmed(incoming["Idempotency-Key"] || incoming["Idempotency-key"]);
   if (idempotencyKey.length < 8 || idempotencyKey.length > 128) throw new Error("Idempotency-Key length must be between 8 and 128 characters");
