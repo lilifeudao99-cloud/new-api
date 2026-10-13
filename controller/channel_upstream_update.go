@@ -16,7 +16,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay/channel/advancedcustom"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
@@ -363,11 +362,9 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	if channel.Type == constant.ChannelTypeTaskPlugin {
-		plugin, ok := jsplugin.DefaultRegistry.Get(channel.GetSetting().TaskPluginKey)
-		if !ok {
-			return nil, fmt.Errorf("task plugin %q is not registered", channel.GetSetting().TaskPluginKey)
+		if err := validateChannel(channel, false); err != nil {
+			return nil, err
 		}
-		return normalizeModelNames(plugin.Meta.Models), nil
 	}
 	baseURL := constant.GetChannelBaseURL(channel.Type)
 	if channel.GetBaseURL() != "" {
@@ -406,33 +403,49 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return service.FetchCodexChannelModels(channel)
 	}
 
-	var url string
+	var requestURL string
 	switch channel.Type {
+	case constant.ChannelTypeTaskPlugin, constant.ChannelTypeDoubaoVideo:
+		// Query the gateway's OpenAI-compatible discovery endpoint independently
+		// of generation. Unsupported endpoints must fail instead of using presets.
+		baseURL = strings.TrimRight(baseURL, "/")
+		modelListBase := strings.TrimSuffix(baseURL, "/v1")
+		requestURL = modelListBase + "/v1/models"
+		if channel.Type == constant.ChannelTypeDoubaoVideo || channel.GetSetting().TaskPluginKey == "doubao" {
+			parsedBase, err := url.Parse(baseURL)
+			if err != nil {
+				return nil, fmt.Errorf("invalid model list base URL")
+			}
+			host := strings.ToLower(parsedBase.Hostname())
+			if strings.HasPrefix(host, "ark.") && strings.HasSuffix(host, ".volces.com") {
+				requestURL = strings.TrimSuffix(baseURL, "/api/v3") + "/api/v3/models"
+			}
+		}
 	case constant.ChannelTypeAli:
-		url = fmt.Sprintf("%s/compatible-mode/v1/models", baseURL)
+		requestURL = fmt.Sprintf("%s/compatible-mode/v1/models", baseURL)
 	case constant.ChannelTypeZhipu_v4:
 		if plan, ok := constant.ChannelSpecialBases[baseURL]; ok && plan.OpenAIBaseURL != "" {
-			url = fmt.Sprintf("%s/models", plan.OpenAIBaseURL)
+			requestURL = fmt.Sprintf("%s/models", plan.OpenAIBaseURL)
 		} else {
-			url = fmt.Sprintf("%s/api/paas/v4/models", baseURL)
+			requestURL = fmt.Sprintf("%s/api/paas/v4/models", baseURL)
 		}
 	case constant.ChannelTypeVolcEngine:
 		// 火山方舟 OpenAI 兼容 API 根路径是 /api/v3（chat/embeddings 均为
 		// {base}/api/v3/...，见 relay/channel/volcengine 的 GetRequestURL），
 		// 不存在 /v1/models 端点。原拼接会导致「获取模型列表」固定 404 失败。
 		if plan, ok := constant.ChannelSpecialBases[baseURL]; ok && plan.OpenAIBaseURL != "" {
-			url = fmt.Sprintf("%s/v1/models", plan.OpenAIBaseURL)
+			requestURL = fmt.Sprintf("%s/v1/models", plan.OpenAIBaseURL)
 		} else {
-			url = fmt.Sprintf("%s/api/v3/models", baseURL)
+			requestURL = fmt.Sprintf("%s/api/v3/models", baseURL)
 		}
 	case constant.ChannelTypeMoonshot:
 		if plan, ok := constant.ChannelSpecialBases[baseURL]; ok && plan.OpenAIBaseURL != "" {
-			url = fmt.Sprintf("%s/models", plan.OpenAIBaseURL)
+			requestURL = fmt.Sprintf("%s/models", plan.OpenAIBaseURL)
 		} else {
-			url = fmt.Sprintf("%s/v1/models", baseURL)
+			requestURL = fmt.Sprintf("%s/v1/models", baseURL)
 		}
 	default:
-		url = fmt.Sprintf("%s/v1/models", baseURL)
+		requestURL = fmt.Sprintf("%s/v1/models", baseURL)
 	}
 
 	key, _, apiErr := channel.GetNextEnabledKey()
@@ -446,9 +459,13 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
 
-	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
+	body, err := getFetchModelsResponseBody(http.MethodGet, requestURL, channel, headers)
 	if err != nil {
-		return nil, sanitizeAdvancedCustomRequestError(err, key, url)
+		return nil, sanitizeAdvancedCustomRequestError(err, key, requestURL)
+	}
+	if channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeDoubaoVideo {
+		models, err := parseOpenAIModelIDs(body)
+		return models, sanitizeFetchModelsError(err, key)
 	}
 
 	var result OpenAIModelsResponse

@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -392,6 +394,126 @@ func TestFetchModelsUsesSharedChannelFetchBehavior(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, `{"success":true,"message":"","data":["claude-sonnet"]}`, recorder.Body.String())
+}
+
+func TestFetchTaskPluginModelsFromUpstream(t *testing.T) {
+	const pluginKey = "upstream-model-list"
+	source := `
+export const meta = {apiVersion: 1, key: "upstream-model-list", name: "Model list", version: "1.0.0", author: {name: "Test"}, models: ["preset-only"], fetchMode: "per_task"};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(pluginKey) })
+
+	for _, test := range []struct {
+		name      string
+		typeID    int
+		status    int
+		body      string
+		wantError string
+	}{
+		{name: "plugin uses actual models", typeID: constant.ChannelTypeTaskPlugin, status: 200, body: `{"data":[{"id":" seedance-upstream "},{"id":"seedance-upstream"}]}`},
+		{name: "legacy doubao uses actual models", typeID: constant.ChannelTypeDoubaoVideo, status: 200, body: `{"data":[{"id":"seedance-upstream"}]}`},
+		{name: "upstream unavailable does not use presets", typeID: constant.ChannelTypeTaskPlugin, status: 503, body: `{}`, wantError: "status code: 503"},
+		{name: "missing list is an error", typeID: constant.ChannelTypeTaskPlugin, status: 200, body: `{"success":false}`, wantError: "data is required"},
+		{name: "malformed list is an error", typeID: constant.ChannelTypeTaskPlugin, status: 200, body: `{"data":"not-a-list"}`, wantError: "invalid OpenAI Models response"},
+		{name: "empty list is an error", typeID: constant.ChannelTypeTaskPlugin, status: 200, body: `{"data":[]}`, wantError: "no valid model IDs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/v1/models", r.URL.Path)
+				assert.Equal(t, "Bearer enabled-key", r.Header.Get("Authorization"))
+				assert.Equal(t, "custom-value", r.Header.Get("X-Models"))
+				w.WriteHeader(test.status)
+				_, writeErr := w.Write([]byte(test.body))
+				assert.NoError(t, writeErr)
+			}))
+			t.Cleanup(server.Close)
+			headerOverride := `{"X-Models":"custom-value"}`
+			channel := &model.Channel{Type: test.typeID, Key: "disabled-key\nenabled-key", BaseURL: &server.URL, HeaderOverride: &headerOverride}
+			channel.SetSetting(dto.ChannelSettings{TaskPluginKey: pluginKey})
+			channel.ChannelInfo = model.ChannelInfo{
+				IsMultiKey:         true,
+				MultiKeyStatusList: map[int]int{0: common.ChannelStatusManuallyDisabled, 1: common.ChannelStatusEnabled},
+			}
+			models, fetchErr := fetchChannelUpstreamModelIDs(channel)
+			if test.wantError != "" {
+				require.ErrorContains(t, fetchErr, test.wantError)
+				require.Nil(t, models)
+				return
+			}
+			require.NoError(t, fetchErr)
+			assert.Equal(t, []string{"seedance-upstream"}, models)
+		})
+	}
+
+	t.Run("create preview carries plugin binding and request headers", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/v1/models", r.URL.Path)
+			assert.Equal(t, "Bearer preview-key", r.Header.Get("Authorization"))
+			assert.Equal(t, "preview-value", r.Header.Get("X-Models"))
+			_, writeErr := w.Write([]byte(`{"data":[{"id":"preview-upstream"}]}`))
+			assert.NoError(t, writeErr)
+		}))
+		t.Cleanup(server.Close)
+		body, marshalErr := common.Marshal(map[string]any{
+			"type": constant.ChannelTypeTaskPlugin, "base_url": server.URL + "/v1/",
+			"key": "preview-key\nother-key", "task_plugin_key": pluginKey,
+			"header_override": `{"X-Models":"preview-value"}`,
+		})
+		require.NoError(t, marshalErr)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/fetch_models", bytes.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		FetchModels(ctx)
+		require.JSONEq(t, `{"success":true,"message":"","data":["preview-upstream"]}`, recorder.Body.String())
+	})
+
+	t.Run("saved channel discovery uses saved key without changing models", func(t *testing.T) {
+		db := setupModelListControllerTestDB(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/v1/models", r.URL.Path)
+			assert.Equal(t, "Bearer saved-key", r.Header.Get("Authorization"))
+			_, writeErr := w.Write([]byte(`{"data":[{"id":"saved-upstream"}]}`))
+			assert.NoError(t, writeErr)
+		}))
+		t.Cleanup(server.Close)
+		channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin, Key: "saved-key", BaseURL: &server.URL, Models: "manual-model"}
+		channel.SetSetting(dto.ChannelSettings{TaskPluginKey: pluginKey})
+		require.NoError(t, db.Create(channel).Error)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channel.Id)}}
+		FetchUpstreamModels(ctx)
+		require.JSONEq(t, `{"success":true,"message":"","data":["saved-upstream"]}`, recorder.Body.String())
+		saved, loadErr := model.GetChannelById(channel.Id, true)
+		require.NoError(t, loadErr)
+		assert.Equal(t, "manual-model", saved.Models)
+		assert.Equal(t, "saved-key", saved.Key)
+	})
+
+	t.Run("native Ark discovery uses its model endpoint through the configured proxy", func(t *testing.T) {
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "ark.cn-beijing.volces.com", r.URL.Host)
+			assert.Equal(t, "/api/v3/models", r.URL.Path)
+			assert.Equal(t, "Bearer ark-key", r.Header.Get("Authorization"))
+			_, writeErr := w.Write([]byte(`{"data":[{"id":"doubao-upstream"}]}`))
+			assert.NoError(t, writeErr)
+		}))
+		t.Cleanup(proxy.Close)
+		baseURL := "http://ark.cn-beijing.volces.com/api/v3/"
+		channel := &model.Channel{Type: constant.ChannelTypeDoubaoVideo, Key: "ark-key", BaseURL: &baseURL}
+		channel.SetSetting(dto.ChannelSettings{Proxy: proxy.URL})
+		models, fetchErr := fetchChannelUpstreamModelIDs(channel)
+		require.NoError(t, fetchErr)
+		assert.Equal(t, []string{"doubao-upstream"}, models)
+	})
 }
 
 func TestFetchNewAPIModelsUsesOpenAIContract(t *testing.T) {

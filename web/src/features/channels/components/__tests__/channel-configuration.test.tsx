@@ -1177,7 +1177,7 @@ test('request processing configuration does not mark the network category as con
   ).not.toHaveAccessibleName(/Configured/)
 })
 
-test('configuration from fields unsupported by the selected provider stays unmarked', async () => {
+test('unsupported plugin request fields stay unmarked while enabled upstream detection is marked', async () => {
   editingChannel = {
     ...editingChannel,
     type: 61,
@@ -1192,7 +1192,7 @@ test('configuration from fields unsupported by the selected provider stays unmar
   ).not.toHaveAccessibleName(/Configured/)
   expect(
     screen.getByRole('tab', { name: /Other Settings/ })
-  ).not.toHaveAccessibleName(/Configured/)
+  ).toHaveAccessibleName(/Configured/)
 })
 
 test('an invalid edit switches categories and replaces configured styling with the field error', async () => {
@@ -1456,15 +1456,15 @@ test('model configuration keeps unchecked candidates searchable and supports cat
   expect(trigger).toBeDisabled()
 })
 
-test('model configuration is available for a plugin channel without upstream discovery and is disabled when its model list is empty', async () => {
+test('model configuration and upstream discovery are available for a plugin channel and configuration is disabled when its model list is empty', async () => {
   const user = userEvent.setup()
   render(<ConfigurationHarness />)
   await user.click(await screen.findByRole('option', { name: /Video A/ }))
   const trigger = screen.getByRole('button', { name: 'Configure Models' })
   expect(trigger).toBeEnabled()
   expect(
-    screen.queryByRole('button', { name: 'Fetch from Upstream' })
-  ).not.toBeInTheDocument()
+    screen.getByRole('button', { name: 'Fetch from Upstream' })
+  ).toBeEnabled()
   await user.click(trigger)
   const dialog = within(
     screen.getByRole('dialog', { name: 'Configure Models' })
@@ -1474,6 +1474,56 @@ test('model configuration is available for a plugin channel without upstream dis
   await user.click(screen.getByRole('button', { name: 'Clear All' }))
 
   expect(trigger).toBeDisabled()
+})
+
+test('new plugin channels discover upstream models using the selected plugin and retain preset selections', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: ['upstream-video'] },
+  })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(await screen.findByRole('option', { name: /Video A/ }))
+  fireEvent.change(screen.getByLabelText('API Key *'), {
+    target: { value: 'preview-key' },
+  })
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  await user.click(
+    await screen.findByRole('checkbox', { name: 'upstream-video' })
+  )
+
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/fetch_models',
+    expect.objectContaining({
+      type: 61,
+      task_plugin_key: 'video-a',
+      base_url: 'https://a.example',
+      key: 'preview-key',
+    }),
+    expect.anything()
+  )
+  expect(screen.getByRole('button', { name: 'upstream-video' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'video-a-1' })).toBeVisible()
+})
+
+test('saved plugin channels discover upstream models with saved credentials', async () => {
+  editingChannel = {
+    ...editingChannel,
+    type: 61,
+    setting: JSON.stringify({ task_plugin_key: 'video-a' }),
+  }
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+
+  expect(
+    await screen.findByRole('checkbox', { name: 'upstream-model' })
+  ).toBeVisible()
+  expect(api.get).toHaveBeenCalledWith(
+    '/api/channel/fetch_models/42',
+    expect.anything()
+  )
+  expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
 })
 
 test('advanced custom edits preview draft connection settings with the saved key', async () => {

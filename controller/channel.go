@@ -1230,6 +1230,7 @@ type fetchModelsRequest struct {
 	BaseURL        *string `json:"base_url"`
 	Type           int     `json:"type"`
 	Key            string  `json:"key"`
+	TaskPluginKey  string  `json:"task_plugin_key"`
 	AdvancedCustom *string `json:"advanced_custom"`
 	HeaderOverride *string `json:"header_override"`
 	Proxy          *string `json:"proxy"`
@@ -1342,6 +1343,14 @@ func FetchModels(c *gin.Context) {
 			Type:    req.Type,
 			Key:     key,
 			BaseURL: &baseURL,
+		}
+		if req.Type == constant.ChannelTypeTaskPlugin || req.Type == constant.ChannelTypeDoubaoVideo {
+			settings := dto.ChannelSettings{TaskPluginKey: strings.TrimSpace(req.TaskPluginKey)}
+			if req.Proxy != nil {
+				settings.Proxy = strings.TrimSpace(*req.Proxy)
+			}
+			channel.SetSetting(settings)
+			channel.HeaderOverride = req.HeaderOverride
 		}
 	}
 
