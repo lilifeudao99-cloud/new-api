@@ -95,6 +95,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 				assert.Contains(t, plugin.Meta.Models, "gpt-image-2.5-flare")
 				assert.Contains(t, plugin.Meta.Models, "gpt-image-2.5-sunburst")
 				assert.Contains(t, plugin.Meta.Models, "nano-banana-2")
+				assert.Contains(t, plugin.Meta.Models, "nano-banana-2.1")
 				assert.Contains(t, plugin.Meta.Models, "nano-banana-pro")
 				for _, route := range []struct {
 					method string

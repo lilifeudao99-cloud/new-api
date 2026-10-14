@@ -1,6 +1,6 @@
 # ailili.chat 异步图片生成 API
 
-本文介绍如何通过 ailili.chat 调用异步文生图和图生图接口。请求创建后会立即返回任务 ID，客户端使用该 ID 查询进度；任务完成后可从 ailili.chat 获取稳定的结果下载链接。
+本文介绍如何通过 ailili.chat 调用异步文生图和图生图接口。上游受理后返回 ailili.chat 任务 ID，客户端使用该 ID 查询进度；任务完成后可取得上游 OSS 图片链接。此变更版本部署后，新生成的图片直接使用上游存储，不再下载并转存到 TOS。
 
 ## 接入信息
 
@@ -135,7 +135,18 @@ curl 'https://ailili.chat/v1/image-batches/<task_id>' \
 | `partially_succeeded` | 批次中至少一个结果成功，同时存在失败或未知项 |
 | `failed` | 任务失败 |
 
-客户端可每隔数秒查询一次，完成或失败后停止轮询。若 `total` 大于 1，使用 `succeeded`、`failed`、`queued` 和 `running` 等计数跟踪批次进度。
+客户端建议每 **5 秒**查询一次：等待上一次查询结束后再计时，避免重叠请求。遇到 `succeeded`、`partially_succeeded` 或 `failed` 等终态时停止轮询，并查询 items，同时展示成功结果和失败原因。若 `total` 大于 1，使用 `succeeded`、`failed`、`queued` 和 `running` 等计数跟踪批次进度。
+
+`GET` 查询读取网关已保存的状态，不会重新发起生图。图片轮询优化版本部署后，服务端会以 5 秒目标间隔调度上游查询；上一轮仍在查询时不会重叠执行。上游生成和查询耗时仍会影响实际完成时间，5 秒不是完成时限。客户自己的程序需要采用上述查询间隔。
+
+可直接使用 [Python 查询客户端](../bin/poll-image-batch.py)（仅标准库，无需安装依赖）：
+
+```bash
+# 预先通过环境变量设置 AILILI_IMAGE_BATCH_API_KEY，不要将 Key 写入脚本。
+python3 bin/poll-image-batch.py '<task_id>' --output image-batch-result.json
+```
+
+该客户端只查询已有任务，每 5 秒查询一次，终态后读取全部分页结果，将任务状态及每项错误/下载链接保存到权限为 `0600` 的新文件。临时网络故障、HTTP 429/5xx 按 5、10、20、30 秒退避重试，遵守数字形式的 `Retry-After`；其他 HTTP 错误立即报告。默认等待最多 15 分钟，可使用 `--timeout` 修改；超时后保留原任务 ID 继续查询，**不要重新提交 POST 生图请求**。结果文件含访问凭据，请勿公开。
 
 ## 获取生成结果
 
@@ -155,7 +166,7 @@ curl 'https://ailili.chat/v1/image-batches/<task_id>/items' \
     {
       "item_id": "<item_id>",
       "status": "succeeded",
-      "output_url": "https://ailili.chat/v1/tasks/<task_id>/artifacts/image-0/content?access=<temporary-access-token>"
+      "output_url": "https://<upstream-image-host>/images/<image>.png"
     }
   ],
   "next_cursor": "",
@@ -163,7 +174,9 @@ curl 'https://ailili.chat/v1/image-batches/<task_id>/items' \
 }
 ```
 
-`output_url` 是 ailili.chat 的稳定下载代理地址，不是上游临时链接或 TOS 地址。请将其作为不透明 URL 使用，不要解析或改写查询参数；访问它会重定向到短时对象存储下载地址。完整 URL 中含有临时访问凭据，应按敏感信息处理，不要写入公开日志、分析跟踪系统或公开网页。客户端若需长期保存图片，应在任务成功后通过该 URL 下载图片并保存到自己的存储。
+新任务的 `output_url` 保留上游返回的完整 OSS 图片 URL；ailili.chat 不再提前下载图片，也不向 TOS 写入生成结果。请将它作为不透明 URL 使用，不要解析或修改查询参数。链接可能包含访问凭据，不要写入公开日志。链接有效期和图片保留期限由上游决定，本接口不承诺永久下载；需要长期保存时，请在任务完成后下载到客户自己的存储。重新查询任务只会读取已保存的 URL，不能保证刷新上游已过期的链接。
+
+已有任务中保存的 ailili.chat/TOS 下载链接继续按原方式访问。输入参考图与生成结果分开处理：上游异步图生图只接受公网图片 URL，所以本地 multipart 参考图仍需通过 TOS 上传并转换为限时 URL；如果客户已提供公网图片 URL，则不需要这次输入上传。不要关闭 TOS 配置或删除桶、密钥及历史对象，否则本地上传和已有结果下载会受影响。
 
 也可使用 New API 通用任务详情接口：
 
@@ -172,7 +185,7 @@ GET https://ailili.chat/v1/tasks/<task_id>
 GET https://ailili.chat/v1/tasks/<task_id>/artifacts
 ```
 
-这两个通用任务接口使用同一 API Key 认证。完成态下，`/artifacts` 返回 ailili.chat 稳定内容链接；内容链接自身可使用响应中的完整 URL 访问。
+这两个通用任务接口使用同一 API Key 认证。完成态下，`/artifacts` 返回 ailili.chat 内容代理链接；新任务的图片由该入口从上游读取，历史 TOS 任务继续从 TOS 下载。入口路径稳定不代表上游图片永久有效。
 
 ## 计费说明
 

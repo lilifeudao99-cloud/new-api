@@ -4,6 +4,7 @@ type TaskPlatform string
 
 const (
 	TaskPlatformSuno       TaskPlatform = "suno"
+	TaskPlatformImageBatch TaskPlatform = "image-batch"
 	TaskPlatformMidjourney              = "mj"
 )
 

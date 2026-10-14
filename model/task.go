@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"gorm.io/gorm"
 )
 
 type TaskStatus string
@@ -372,26 +373,51 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 }
 
 func GetAllUnFinishSyncTasks(limit int) []*Task {
+	return GetUnfinishedTasksForPolling(limit, TaskPollingAll)
+}
+
+// TaskPollingScope separates image batches from the slower Suno/video cadence.
+type TaskPollingScope int
+
+const (
+	TaskPollingAll TaskPollingScope = iota
+	TaskPollingImages
+	TaskPollingOther
+)
+
+func unfinishedTasksForPolling(scope TaskPollingScope) *gorm.DB {
+	query := DB.Model(&Task{}).
+		Where("progress != ?", "100%").
+		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess})
+	switch scope {
+	case TaskPollingImages:
+		query = query.Where("platform = ?", constant.TaskPlatformImageBatch)
+	case TaskPollingOther:
+		query = query.Where("platform <> ? OR platform IS NULL", constant.TaskPlatformImageBatch)
+	}
+	return query
+}
+
+// GetUnfinishedTasksForPolling filters before LIMIT so video backlogs cannot
+// starve the dedicated image polling pass (or vice versa).
+func GetUnfinishedTasksForPolling(limit int, scope TaskPollingScope) []*Task {
 	var tasks []*Task
-	var err error
-	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err := unfinishedTasksForPolling(scope).Limit(limit).Order("id").Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
 	return tasks
 }
 
-// HasUnfinishedSyncTasks reports whether at least one async (Suno/video) task is
-// still in progress. It is a cheap existence check (LIMIT 1) used to decide
-// whether the async_task_poll system task needs to run; when no task is pending
-// the scheduler skips creating a row entirely.
+// HasUnfinishedSyncTasks includes every async task platform for legacy callers.
 func HasUnfinishedSyncTasks() bool {
+	return HasUnfinishedTasksForPolling(TaskPollingAll)
+}
+
+// HasUnfinishedTasksForPolling keeps idle schedulers from creating task rows.
+func HasUnfinishedTasksForPolling(scope TaskPollingScope) bool {
 	var id int64
-	err := DB.Model(&Task{}).
-		Where("progress != ?", "100%").
-		Where("status != ?", TaskStatusFailure).
-		Where("status != ?", TaskStatusSuccess).
+	err := unfinishedTasksForPolling(scope).
 		Limit(1).
 		Pluck("id", &id).Error
 	return err == nil && id != 0

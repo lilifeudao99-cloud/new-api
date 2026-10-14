@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +17,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -128,12 +125,17 @@ type TaskPollSummary struct {
 	NullTasksFailed  int `json:"null_tasks_failed"`
 }
 
-// RunTaskPollingOnce performs one async-task (Suno/video) polling pass
+// RunTaskPollingOnce performs one async-task polling pass across all platforms.
+func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) TaskPollSummary {
+	return RunTaskPollingOnceForScope(ctx, report, model.TaskPollingAll)
+}
+
+// RunTaskPollingOnceForScope performs one polling pass for the selected scope
 // synchronously. It honors ctx cancellation (the system-task runner cancels it
 // when the lease is lost) and, when report is non-nil, reports progress as
 // (processedPlatforms, totalPlatforms). It returns immediately if the task
 // adaptor factory has not been wired yet, to avoid a nil call during startup.
-func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) TaskPollSummary {
+func RunTaskPollingOnceForScope(ctx context.Context, report func(processed, total int), scope model.TaskPollingScope) TaskPollSummary {
 	summary := TaskPollSummary{}
 	if GetTaskAdaptorFunc == nil {
 		return summary
@@ -141,10 +143,13 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if ctx.Err() != nil {
+		return summary
+	}
 
 	common.SysLog("任务进度轮询开始")
 	sweepTimedOutTasks(ctx)
-	allTasks := model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
+	allTasks := model.GetUnfinishedTasksForPolling(constant.TaskQueryLimit, scope)
 	summary.UnfinishedTasks = len(allTasks)
 	platformTask := make(map[constant.TaskPlatform][]*model.Task)
 	for _, t := range allTasks {
@@ -546,17 +551,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if classifyPollHTTP(resp.StatusCode) == pollClassOtherClient && isNonTerminalPollStatus(parsedStatus) {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassUnrecognized, resp.StatusCode, unrecognizedPollDetail(taskResult.Reason, responseBody))
 	}
-	if parsedStatus == model.TaskStatusSuccess && isImageBatchTask(task) && GetTaskArtifactStore().Enabled() {
-		persistedBody, stableFirstURL, persistErr := persistImageBatchOutputs(ctx, task, responseBody)
-		if persistErr != nil {
-			return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransient, resp.StatusCode, "image output persistence failed")
-		}
-		responseBody = persistedBody
-		if stableFirstURL != "" {
-			taskResult.Url = stableFirstURL
-		}
-	}
-
+	// Keep upstream image URLs in the task snapshot. Completion does not
+	// download or copy generated images into the input/historical artifact store.
 	task.Data = redactVideoResponseBody(responseBody)
 	if len(taskResult.PluginState) > 0 {
 		task.PrivateData.PluginState = taskResult.PluginState
@@ -642,72 +638,6 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 
 func isImageBatchTask(task *model.Task) bool {
 	return task != nil && task.PrivateData.Execution != nil && task.PrivateData.Execution.TaskPlugin != nil && task.PrivateData.Execution.TaskPlugin.Key == "image-batch"
-}
-
-func persistImageBatchOutputs(ctx context.Context, task *model.Task, responseBody []byte) ([]byte, string, error) {
-	var payload map[string]any
-	if err := common.Unmarshal(responseBody, &payload); err != nil {
-		return nil, "", err
-	}
-	items, ok := payload["data"].([]any)
-	if !ok || len(items) == 0 {
-		return nil, "", fmt.Errorf("image batch result has no items")
-	}
-	store := GetTaskArtifactStore()
-	client := GetSSRFProtectedHTTPClient()
-	firstURL := ""
-	for index, raw := range items {
-		item, ok := raw.(map[string]any)
-		if !ok || strings.ToLower(strings.TrimSpace(fmt.Sprint(item["status"]))) != "succeeded" {
-			continue
-		}
-		origin, _ := item["output_url"].(string)
-		origin = strings.TrimSpace(origin)
-		if len(origin) > 64<<10 {
-			return nil, "", fmt.Errorf("image output URL is too long")
-		}
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed == nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-			return nil, "", fmt.Errorf("invalid image output URL")
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin, nil)
-		if err != nil {
-			return nil, "", err
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, "", err
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, "", fmt.Errorf("image output returned HTTP %d", resp.StatusCode)
-		}
-		mimeType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-		if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
-			resp.Body.Close()
-			return nil, "", fmt.Errorf("upstream result is not an image")
-		}
-		key := "image-" + strconv.Itoa(index)
-		ref, err := store.Persist(ctx, task, types.TaskArtifact{Key: key, Type: "image", MimeType: mimeType}, io.LimitReader(resp.Body, maxTaskArtifactObjectBytes+1))
-		resp.Body.Close()
-		if err != nil {
-			return nil, "", err
-		}
-		stableURL, err := BuildTaskArtifactContentURL(task.TaskID, key)
-		if err != nil {
-			return nil, "", err
-		}
-		item["output_url"] = stableURL
-		if firstURL == "" {
-			firstURL = stableURL
-		}
-		_ = ref
-	}
-	if firstURL == "" {
-		return nil, "", fmt.Errorf("image batch has no successful output URL")
-	}
-	rewritten, err := common.Marshal(payload)
-	return rewritten, firstURL, err
 }
 
 func redactVideoResponseBody(body []byte) []byte {

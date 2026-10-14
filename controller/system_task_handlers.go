@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterScheduledSystemTasks wires the periodic channel test, upstream model
-// update, and async task polling (Midjourney / Suno / video) jobs into the
+// update, and async task polling (image batches / Midjourney / Suno / video) jobs into the
 // system task framework so a DB lease dedups execution across multiple master
 // instances and each run is recorded as one task row. Call this before
 // service.StartSystemTaskRunner.
@@ -22,6 +22,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(imageTaskPollHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -140,7 +141,7 @@ type asyncTaskPollHandler struct{}
 func (asyncTaskPollHandler) Type() string { return model.SystemTaskTypeAsyncTaskPoll }
 
 func (asyncTaskPollHandler) Enabled() bool {
-	return constant.UpdateTask && model.HasUnfinishedSyncTasks()
+	return constant.UpdateTask && model.HasUnfinishedTasksForPolling(model.TaskPollingOther)
 }
 
 func (asyncTaskPollHandler) Interval() time.Duration { return 15 * time.Second }
@@ -148,7 +149,25 @@ func (asyncTaskPollHandler) Interval() time.Duration { return 15 * time.Second }
 func (asyncTaskPollHandler) NewPayload() any { return nil }
 
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
-	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	summary := service.RunTaskPollingOnceForScope(ctx, service.NewSystemTaskProgressReporter(task, runnerID), model.TaskPollingOther)
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// imageTaskPollHandler polls image batches independently of slower video jobs.
+type imageTaskPollHandler struct{}
+
+func (imageTaskPollHandler) Type() string { return model.SystemTaskTypeImageTaskPoll }
+
+func (imageTaskPollHandler) Enabled() bool {
+	return constant.UpdateTask && model.HasUnfinishedTasksForPolling(model.TaskPollingImages)
+}
+
+func (imageTaskPollHandler) Interval() time.Duration { return 5 * time.Second }
+
+func (imageTaskPollHandler) NewPayload() any { return nil }
+
+func (imageTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary := service.RunTaskPollingOnceForScope(ctx, service.NewSystemTaskProgressReporter(task, runnerID), model.TaskPollingImages)
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 

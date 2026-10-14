@@ -17,13 +17,13 @@ import (
 const (
 	// systemTaskRunnerIdleInterval is the fallback poll interval used to pick up
 	// tasks created on other nodes and mark expired leases failed.
-	systemTaskRunnerIdleInterval = 15 * time.Second
+	systemTaskRunnerIdleInterval = 5 * time.Second
 	systemTaskLockTTL            = 60 * time.Second
 	logCleanupBatchSize          = 100
 
 	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
 	// pass runs, independent of how often the runner wakes to claim tasks.
-	systemTaskSchedulerInterval = 15 * time.Second
+	systemTaskSchedulerInterval = 5 * time.Second
 	systemTaskStaleLockInterval = 30 * time.Second
 )
 
@@ -146,8 +146,11 @@ func StartSystemTaskRunner() {
 						logger.LogWarn(context.Background(), fmt.Sprintf("system task stale lock cleanup failed: %v", err))
 					}
 				}
-				if now.Sub(lastScheduler) >= systemTaskSchedulerInterval {
-					lastScheduler = now
+				// Compare tick buckets so minor ticker jitter cannot turn a five
+				// second cadence into ten seconds by skipping the next pass.
+				schedulerTick := now.Truncate(systemTaskSchedulerInterval)
+				if schedulerTick.After(lastScheduler) {
+					lastScheduler = schedulerTick
 					runSystemTaskScheduler()
 				}
 				runSystemTaskClaimPass(runnerID)
@@ -284,7 +287,13 @@ func runSystemTaskScheduler() {
 			if latest.Status == model.SystemTaskStatusPending || latest.Status == model.SystemTaskStatusRunning {
 				continue // an active row already exists
 			}
-			if now-latest.UpdatedAt < int64(scheduled.Interval().Seconds()) {
+			lastRun := latest.UpdatedAt
+			if scheduled.Type() == model.SystemTaskTypeImageTaskPoll {
+				// Image intervals are start-to-start. An active pass still blocks
+				// creation above, including during a slow upstream query.
+				lastRun = latest.CreatedAt
+			}
+			if now-lastRun < int64(scheduled.Interval().Seconds()) {
 				continue // not due yet
 			}
 		}
