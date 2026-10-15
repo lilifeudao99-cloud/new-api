@@ -50,7 +50,7 @@ export const meta = {
     en: "Doubao Seedance video generation with native Ark and OpenAI-compatible upstreams",
     zh: "豆包 Seedance 视频生成，支持原生 Ark 与 OpenAI 兼容上游",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: [
@@ -75,6 +75,17 @@ export const meta = {
       unit: "token",
       description: { en: "Billing token unit price", zh: "计费 Token 单价" },
     },
+    // Native model mappings also support existing per-second expressions.
+    seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Video generation unit price", zh: "视频生成单价" },
+    },
+    input_seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Reference video generation unit price", zh: "参考视频生成单价" },
+    },
     // Output video resolution; Seedance token unit price varies by resolution tier.
     resolution: {
       enum: ["480p", "720p", "1080p", "4k"],
@@ -96,12 +107,12 @@ export const meta = {
   // Official Ark formula tokens = (input + output seconds) × W × H × 24 / 1024,
   // 16:9 max-pixel sizes, cross-checked against Volcengine price examples.
   usageExamples: [
-    { label: "480p · 5s", facts: { tokens: 48038, resolution: "480p", video_input: "none" } },
-    { label: "720p · 5s", facts: { tokens: 108000, resolution: "720p", video_input: "none" } },
-    { label: "1080p · 5s", facts: { tokens: 243000, resolution: "1080p", video_input: "none" } },
-    { label: "4k · 5s", facts: { tokens: 972000, resolution: "4k", video_input: "none" } },
-    { label: "720p · 10s", facts: { tokens: 216000, resolution: "720p", video_input: "none" } },
-    { label: "720p · 5s (+4s 输入视频)", facts: { tokens: 194400, resolution: "720p", video_input: "video" } },
+    { label: "480p · 5s", facts: { tokens: 48038, seconds: 5, input_seconds: 0, resolution: "480p", video_input: "none" } },
+    { label: "720p · 5s", facts: { tokens: 108000, seconds: 5, input_seconds: 0, resolution: "720p", video_input: "none" } },
+    { label: "1080p · 5s", facts: { tokens: 243000, seconds: 5, input_seconds: 0, resolution: "1080p", video_input: "none" } },
+    { label: "4k · 5s", facts: { tokens: 972000, seconds: 5, input_seconds: 0, resolution: "4k", video_input: "none" } },
+    { label: "720p · 10s", facts: { tokens: 216000, seconds: 10, input_seconds: 0, resolution: "720p", video_input: "none" } },
+    { label: "720p · 5s (+4s 输入视频)", facts: { tokens: 194400, seconds: 5, input_seconds: 4, resolution: "720p", video_input: "video" } },
   ],
   usageProfiles: [
     seedanceUsageProfile(["seedance-2.0"], ["480p", "720p", "1080p", "4k"]),
@@ -217,6 +228,7 @@ function hasReferenceInput(req, ctx) {
 }
 
 function hasReferenceVideo(req, ctx) {
+  if (hasVideo(req.metadata && req.metadata.content)) return true;
   if (trimmed(req.input_video) || trimmed(req.video)) return true;
   if (isVideoReferenceValue(req.input_reference)) return true;
   return (ctx && Array.isArray(ctx.files) && ctx.files.some((file) => {
@@ -226,11 +238,9 @@ function hasReferenceVideo(req, ctx) {
 }
 
 function referenceVideoSeconds(req, ctx) {
-  for (const value of [req.input_seconds, req.reference_video_duration, req.input_reference_duration, ctx && ctx.inputVideoSeconds]) {
-    const seconds = Number(value);
-    if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds, 3600);
-  }
-  return 0;
+  const seconds = Number(ctx && ctx.inputVideoSeconds);
+  if (Number.isFinite(seconds) && seconds > 0 && seconds <= 3600) return seconds;
+  throw new Error("Seedance billing requires verified server-side reference duration");
 }
 
 function normalizeXinfengRequest(req, ctx, model) {
@@ -413,17 +423,32 @@ export function buildSubmitRequest(ctx) {
       action: hasReferenceInput(values, ctx) ? "image_to_video" : "text_to_video",
     };
   }
+  if ((ctx.files || []).length) throw new Error("Doubao native requests require reference URLs inside metadata.content");
   const metadata = req.metadata || {};
   const body = Object.assign({ model: req.model || "", content: [] }, metadata);
+  if (body.resolution === undefined && (req.resolution !== undefined || req.size !== undefined || isXinfengSeedanceModel(ctx.model))) {
+    body.resolution = normalizeResolution(req.resolution || req.size || "720p");
+  }
+  validateXinfengResolution(body, ctx.model);
   const imageContent = [];
-  const images = Array.isArray(req.images) ? req.images : [];
+  const images = Array.isArray(req.images) ? req.images.slice() : [];
+  if (isXinfengSeedanceModel(ctx.model)) {
+    for (const reference of [req.image, req.input_reference]) {
+      if (typeof reference === "string" && trimmed(reference) && !isVideoReferenceValue(reference) && !images.includes(reference)) images.push(reference);
+    }
+  }
   for (const url of images) imageContent.push({ type: "image_url", image_url: { url: url } });
   const metadataContent = Array.isArray(body.content) ? body.content : [];
   body.content = imageContent.concat(metadataContent).filter((item) => item && item.type !== "text");
+  if (isXinfengSeedanceModel(ctx.model)) {
+    for (const reference of [req.input_video, req.video, isVideoReferenceValue(req.input_reference) ? req.input_reference : null]) {
+      if (typeof reference === "string" && trimmed(reference)) body.content.push({ type: "video_url", video_url: { url: reference }, role: "reference_video" });
+    }
+  }
   const hasReference = body.content.length > 0;
   if (trimmed(req.prompt) || !hasReference) body.content.push({ type: "text", text: req.prompt || "" });
   if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
-  const seconds = Number.parseInt(req.seconds || "", 10);
+  const seconds = Number(req.seconds || req.duration || metadata.duration || 0);
   if (seconds > 0) body.duration = seconds;
   body.model = ctx.upstreamModel || body.model;
   return {
@@ -451,9 +476,9 @@ export function extractUsage(ctx) {
   const req = ctx.requestBody || {};
   const model = ctx.upstreamModel || ctx.model;
   if (isXinfengSeedanceModel(model)) {
-    let seconds = Number(req.seconds || req.duration || 4);
-    if (!Number.isFinite(seconds) || seconds <= 0) seconds = 4;
-    const videoInput = hasReferenceVideo(req, ctx);
+    const seconds = Number(req.seconds || req.duration || 0);
+    if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 3600) throw new Error("Seedance billing requires explicit seconds between 1 and 3600");
+    const videoInput = Number(ctx.inputVideoSeconds) > 0 || hasReferenceVideo(req, ctx);
     return {
       seconds: Math.min(seconds, 3600),
       input_seconds: videoInput ? referenceVideoSeconds(req, ctx) : 0,
@@ -467,21 +492,43 @@ export function extractUsage(ctx) {
     return ratio === 1 ? null : { video_input_ratio: ratio };
   }
   let seconds = Number(req.seconds || req.duration || metadata.duration || 0);
+  // The public Seedance aliases keep per-second pricing when mapped to Ark
+  // names. Missing/adaptive durations cannot be priced as a guessed default.
+  const mappedSeedance = isXinfengSeedanceModel(ctx.model);
+  if (mappedSeedance && (!Number.isInteger(seconds) || seconds <= 0 || seconds > 3600)) {
+    throw new Error("mapped Seedance billing requires explicit seconds between 1 and 3600");
+  }
   if (!Number.isFinite(seconds) || seconds <= 0) {
     const frames = Number(metadata.frames);
     seconds = Number.isFinite(frames) && frames > 0 ? Math.floor(frames / 24) : 15;
   }
   if (seconds <= 0) seconds = 5;
   seconds = Math.min(seconds, 3600);
-  const rawResolution = metadata.resolution || req.size;
+  const rawResolution = metadata.resolution || req.resolution || req.size;
+  if (mappedSeedance) validateXinfengResolution({ resolution: rawResolution }, ctx.model);
   const raw = trimmed(rawResolution).toLowerCase();
   const recognized = ["480p", "720p", "1080p", "4k"].includes(raw) || raw.replace("*", "x").split("x").length === 2;
-  const resolution = recognized ? normalizeResolution(rawResolution) : "1080p";
-  return {
+  const resolution = recognized ? normalizeResolution(rawResolution) : mappedSeedance ? "720p" : "1080p";
+  const videoInput = Number(ctx.inputVideoSeconds) > 0 || hasVideo(metadata.content) || hasReferenceVideo(req, ctx);
+  const facts = {
     tokens: estimateTokens(seconds, resolution),
+    seconds: seconds,
     resolution: resolution,
-    video_input: hasVideo(metadata.content) ? "video" : "none",
+    video_input: videoInput ? "video" : "none",
   };
+  if (!videoInput) {
+    facts.input_seconds = 0;
+  } else {
+    // Only the host's parsed media duration is trusted at submission. Client
+    // input_seconds/reference_video_duration hints cannot lower the charge.
+    const inputSeconds = Number(ctx.inputVideoSeconds);
+    if (Number.isFinite(inputSeconds) && inputSeconds > 0 && inputSeconds <= 3600) {
+      facts.input_seconds = inputSeconds;
+    } else if (mappedSeedance) {
+      throw new Error("mapped Seedance billing requires verified server-side reference duration");
+    }
+  }
+  return facts;
 }
 
 export function buildQueryRequest(ctx) {
@@ -559,24 +606,28 @@ export function buildContentRequest(ctx) {
   return { url: url, method: ctx.clientRequest.method, credentialless: true };
 }
 
+function completedSecondUsage(source) {
+  const facts = {};
+  const usage = source.usage && typeof source.usage === "object" ? source.usage : {};
+  const seconds = Number(source.seconds || source.duration || source.output_seconds || usage.seconds || usage.output_seconds || 0);
+  if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
+  if (source.resolution !== undefined || source.size !== undefined) facts.resolution = normalizeResolution(source.resolution || source.size);
+  const rawInputSeconds = source.input_seconds === undefined ? usage.input_seconds : source.input_seconds;
+  if (rawInputSeconds !== undefined && rawInputSeconds !== null && rawInputSeconds !== "") {
+    const inputSeconds = Number(rawInputSeconds);
+    if (Number.isFinite(inputSeconds) && inputSeconds >= 0) {
+      facts.input_seconds = Math.min(inputSeconds, 3600);
+      if (inputSeconds > 0) facts.video_input = "video";
+    }
+  }
+  return facts;
+}
+
 export function extractUsageOnComplete(task, taskResult, body) {
   const model = trimmed(task && (task.upstreamModel || task.model));
-  if (isXinfengSeedanceModel(model)) {
-    const source = body || {};
-    const facts = {};
-    const usage = source.usage && typeof source.usage === "object" ? source.usage : {};
-    const seconds = Number(source.seconds || source.duration || source.output_seconds || usage.seconds || usage.output_seconds || 0);
-    if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
-    if (source.resolution !== undefined || source.size !== undefined) facts.resolution = normalizeResolution(source.resolution || source.size);
-    const inputSeconds = Number(source.input_seconds === undefined ? usage.input_seconds : source.input_seconds);
-    if (Number.isFinite(inputSeconds) && inputSeconds > 0) {
-      facts.input_seconds = Math.min(inputSeconds, 3600);
-      facts.video_input = "video";
-    }
-    return facts;
-  }
+  if (isXinfengSeedanceModel(model)) return completedSecondUsage(body || {});
   if (!body || body.status !== "succeeded") return {};
-  const facts = {};
+  const facts = completedSecondUsage(body);
   const usage = body.usage || {};
   let tokens = Number(usage.completion_tokens);
   if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);

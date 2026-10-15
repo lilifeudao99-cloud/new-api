@@ -83,12 +83,14 @@ const maxTaskArtifacts = 64
 const maxTaskPluginPersistedJSONBytes = 1 << 20
 
 type TaskAdaptor struct {
-	plugin         *pluginruntime.LoadedPlugin
-	info           *relaycommon.RelayInfo
-	submit         *requestDescriptor
-	routeRequest   *pluginruntime.RouteRequestContext
-	requestHeaders map[string]string
-	files          []map[string]any
+	plugin                  *pluginruntime.LoadedPlugin
+	info                    *relaycommon.RelayInfo
+	submit                  *requestDescriptor
+	routeRequest            *pluginruntime.RouteRequestContext
+	requestHeaders          map[string]string
+	files                   []map[string]any
+	referenceVideoDurations map[string]float64
+	probeReferenceVideo     func(context.Context, string) (float64, error)
 }
 
 func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{plugin: plugin} }
@@ -156,6 +158,9 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 
 func (a *TaskAdaptor) EstimateBillingValidated(c *gin.Context, info *relaycommon.RelayInfo) (map[string]float64, error) {
 	usageContext := a.submitContext(c, info)
+	if err := a.prepareSeedanceReferenceUsage(c, info, usageContext); err != nil {
+		return nil, err
+	}
 	usageContext["usagePurpose"] = "billing_ratios"
 	return a.usageRatios(c.Request.Context(), cmp.Or(info.UpstreamModelName, info.OriginModelName), "extractUsage", usageContext)
 }
@@ -174,6 +179,9 @@ func (a *TaskAdaptor) ExtractUsageFactsValidated(c *gin.Context, info *relaycomm
 		return nil, nil
 	}
 	usageContext := a.submitContext(c, info)
+	if err := a.prepareSeedanceReferenceUsage(c, info, usageContext); err != nil {
+		return nil, err
+	}
 	usageContext["usagePurpose"] = "facts"
 	value, err := a.plugin.Engine.Call(c.Request.Context(), "extractUsage", usageContext)
 	if err != nil {

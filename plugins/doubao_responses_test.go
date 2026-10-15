@@ -32,7 +32,7 @@ func TestDoubaoResponsesProtocol(t *testing.T) {
 				"resolution": "1080p",
 			},
 		},
-		wantUsageKeys:  []string{"resolution", "tokens", "video_input"},
+		wantUsageKeys:  []string{"resolution", "tokens", "seconds", "input_seconds", "video_input"},
 		wantVendorName: "doubao",
 	})
 }
@@ -79,9 +79,10 @@ func TestDoubaoSeedanceOpenAIVideoProfile(t *testing.T) {
 	require.Equal(t, "seedance-2.0", requestBody["model"])
 
 	usageValue, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
-		"model":         "seedance-2.0",
-		"upstreamModel": "seedance-2.0",
-		"requestBody":   requestBody,
+		"model":             "seedance-2.0",
+		"upstreamModel":     "seedance-2.0",
+		"requestBody":       requestBody,
+		"inputVideoSeconds": 3,
 	})
 	require.NoError(t, err)
 	usageBytes, err := common.Marshal(usageValue)
