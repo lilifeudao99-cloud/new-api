@@ -15,12 +15,16 @@ type embedFileSystem struct {
 	http.FileSystem
 }
 
+// Exists reports only regular files. Directories are treated as missing so
+// that the static middleware never renders an embedded directory listing.
 func (e *embedFileSystem) Exists(prefix string, path string) bool {
-	_, err := e.Open(path)
+	file, err := e.Open(path)
 	if err != nil {
 		return false
 	}
-	return true
+	defer file.Close()
+	info, err := file.Stat()
+	return err == nil && !info.IsDir()
 }
 
 func (e *embedFileSystem) Open(name string) (http.File, error) {

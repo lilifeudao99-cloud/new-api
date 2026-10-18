@@ -17,9 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useNavigate, useRouter } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { reloadForChunkLoadError } from '@/lib/chunk-load-recovery'
 import { cn } from '@/lib/utils'
 
 const FEEDBACK_URL = 'https://github.com/QuantumNous/new-api/issues'
@@ -46,6 +48,11 @@ export function GeneralError({
   const navigate = useNavigate()
   const { history } = useRouter()
   const status = getHttpStatus(error)
+
+  // A route chunk replaced by a newer release: reload into the current build.
+  useEffect(() => {
+    reloadForChunkLoadError(error)
+  }, [error])
   const isRateLimited = status === 429
   const title = isRateLimited
     ? t('Too many requests')

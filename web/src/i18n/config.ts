@@ -115,6 +115,11 @@ i18n
 // it arrives so react-i18next re-renders with the loaded translations.
 i18n.on('languageChanged', (language) => {
   void loadLocale(language)
+  // Keep <html lang> in sync for screen readers, hyphenation and the
+  // browser's translation prompt (internal codes are zhCN/zhTW).
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = language.replace(/^zh(CN|TW)$/, 'zh-$1')
+  }
 })
 
 export default i18n

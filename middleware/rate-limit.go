@@ -164,6 +164,13 @@ func GlobalWebRateLimit() func(c *gin.Context) {
 	return defNext
 }
 
+func GlobalWebStaticRateLimit() func(c *gin.Context) {
+	if common.GlobalWebStaticRateLimitEnable {
+		return rateLimitFactory(common.GlobalWebStaticRateLimitNum, common.GlobalWebStaticRateLimitDuration, "GS")
+	}
+	return defNext
+}
+
 func GlobalAPIRateLimit() func(c *gin.Context) {
 	if common.GlobalApiRateLimitEnable {
 		return rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")

@@ -215,6 +215,12 @@ var (
 	GlobalWebRateLimitNum      int
 	GlobalWebRateLimitDuration int64
 
+	// Content-hashed frontend assets under /static/ use their own bucket so
+	// that loading split chunks does not exhaust the page-navigation limit.
+	GlobalWebStaticRateLimitEnable   bool
+	GlobalWebStaticRateLimitNum      int
+	GlobalWebStaticRateLimitDuration int64
+
 	CriticalRateLimitEnable   bool
 	CriticalRateLimitNum            = 20
 	CriticalRateLimitDuration int64 = 20 * 60

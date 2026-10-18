@@ -22,6 +22,7 @@ import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import { installBuildMetadata } from '@/lib/build-metadata'
+import { reloadForChunkLoadError } from '@/lib/chunk-load-recovery'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
@@ -42,6 +43,11 @@ import './styles/index.css'
 // VChart theme is driven by our ThemeProvider (html.light/html.dark) via per-chart `theme` prop.
 initializeFrontendCache()
 installBuildMetadata()
+// Lazy components outside the route error boundary surface chunk failures as
+// unhandled rejections; recover them the same way as route chunks.
+window.addEventListener('unhandledrejection', (event) => {
+  reloadForChunkLoadError(event.reason)
+})
 
 const queryClient = createAppQueryClient(() => {
   void router.navigate({ to: '/500' })
