@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
@@ -95,7 +96,10 @@ export function useTopNavLinks(): TopNavLink[] {
     links.push({
       title: 'AI 画布',
       href: '#canvas',
-      onClick: () => launchCanvas(),
+      onClick: () =>
+        launchCanvas().catch(() => {
+          toast.error('AI 画布打开失败，请稍后重试')
+        }),
     })
   }
 

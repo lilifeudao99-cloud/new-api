@@ -193,6 +193,14 @@ export function PublicHeader(props: PublicHeaderProps) {
       if (closeMobile) {
         setMobileOpen(false)
       }
+
+      // Action links (e.g. AI 画布 SSO launch) carry a placeholder href.
+      // Run the action inside this click so its window.open is still a user
+      // gesture, and keep the router from navigating to the placeholder.
+      if (link.onClick) {
+        event.preventDefault()
+        void link.onClick()
+      }
     },
     [t]
   )
