@@ -286,6 +286,76 @@ func TestLegacyVideoArtifactContentUsesGetResultURL(t *testing.T) {
 	assert.Equal(t, "bytes 0-3/4", recorder.Header().Get("Content-Range"))
 }
 
+func TestLegacyVideoPreviewRecoversSavedUpstreamURL(t *testing.T) {
+	for _, endpoint := range []string{"artifact", "video"} {
+		for _, source := range []string{"metadata", "missing", "self", "invalid JSON"} {
+			t.Run(endpoint+"/"+source, func(t *testing.T) {
+				task := setupGenericTaskTest(t)
+				allowPrivateTaskMediaTest(t)
+				requests := 0
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					assert.Equal(t, "bytes=0-3", r.Header.Get("Range"))
+					assert.Empty(t, r.Header.Get("Authorization"))
+					w.Header().Set("Content-Type", "video/mp4")
+					w.Header().Set("Content-Range", "bytes 0-3/4")
+					w.Header().Set("Accept-Ranges", "bytes")
+					w.WriteHeader(http.StatusPartialContent)
+					_, _ = w.Write([]byte("data"))
+				}))
+				defer upstream.Close()
+				task.Platform = "grok-legacy"
+				task.Action = constant.TaskActionTextToVideo
+				task.PrivateData.ResultURL = "https://gateway.example/v1/videos/" + task.TaskID + "/content"
+				metadataURL := upstream.URL
+				if source == "self" {
+					metadataURL = task.PrivateData.ResultURL
+				}
+				task.SetData(map[string]any{"status": "completed", "metadata": map[string]any{"url": metadataURL}})
+				if source == "missing" {
+					task.SetData(map[string]any{"status": "completed"})
+				} else if source == "invalid JSON" {
+					task.Data = []byte(`{"status":`)
+				}
+				require.NoError(t, model.DB.Save(task).Error)
+
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Set(middleware.TaskArtifactAccessContextKey, true)
+				if endpoint == "artifact" {
+					c.Params = gin.Params{{Key: "key", Value: task.TaskID}, {Key: "artifact_key", Value: "video"}}
+					c.Request = httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.TaskID+"/artifacts/video/content", nil)
+				} else {
+					c.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+					c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/"+task.TaskID+"/content", nil)
+				}
+				c.Request.Header.Set("Range", "bytes=0-3")
+				if endpoint == "artifact" {
+					TaskArtifactContent(c)
+				} else {
+					VideoProxy(c)
+				}
+				if source == "metadata" {
+					assert.Equal(t, http.StatusPartialContent, recorder.Code)
+					assert.Equal(t, "video/mp4", recorder.Header().Get("Content-Type"))
+					assert.Equal(t, "bytes 0-3/4", recorder.Header().Get("Content-Range"))
+					assert.Equal(t, "data", recorder.Body.String())
+					assert.Equal(t, 1, requests)
+				} else {
+					assert.Equal(t, http.StatusNotFound, recorder.Code)
+					assert.Equal(t, 0, requests)
+					assert.NotContains(t, recorder.Body.String(), "gateway.example")
+				}
+				var persisted model.Task
+				require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+				assert.Equal(t, task.PrivateData.ResultURL, persisted.PrivateData.ResultURL)
+				assert.Equal(t, task.Status, persisted.Status)
+				assert.Equal(t, task.Quota, persisted.Quota)
+			})
+		}
+	}
+}
+
 func TestDisabledArtifactStorePreservesPluginUpstreamContent(t *testing.T) {
 	task := setupGenericTaskTest(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

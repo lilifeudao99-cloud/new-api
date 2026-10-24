@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
+	legacytask "github.com/QuantumNous/new-api/relay/channel/task/legacy"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -110,7 +111,7 @@ func VideoProxy(c *gin.Context) {
 		}
 	}
 	if descriptor == nil {
-		resultURL := task.GetResultURL()
+		resultURL := legacyVideoResultURL(task)
 		if isTaskMediaFallbackLoop(resultURL, task.TaskID) {
 			writeTaskMediaProxyError(c, &taskMediaProxyError{
 				status: http.StatusGone, code: "artifact_gone",
@@ -127,6 +128,23 @@ func VideoProxy(c *gin.Context) {
 	if err := proxyTaskMedia(c, task, descriptor); err != nil {
 		writeTaskMediaProxyError(c, err)
 	}
+}
+
+// Older legacy tasks can store our public proxy URL when the upstream URL
+// was not recognized. Recover from the saved response without changing the
+// task, re-polling the upstream, or bypassing the media proxy's URL checks.
+func legacyVideoResultURL(task *model.Task) string {
+	resultURL := task.GetResultURL()
+	if task.Platform != "grok-legacy" || taskHasPluginExecution(task) ||
+		!isTaskMediaFallbackLoop(resultURL, task.TaskID) {
+		return resultURL
+	}
+	result, err := (&legacytask.TaskAdaptor{}).ParseTaskResult(task, nil, task.Data)
+	if err == nil && result != nil && result.Status == model.TaskStatusSuccess &&
+		strings.TrimSpace(result.Url) != "" {
+		return result.Url
+	}
+	return resultURL
 }
 
 func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.TaskContentRequest) error {

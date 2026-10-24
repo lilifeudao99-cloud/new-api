@@ -35,7 +35,10 @@ type responseTask struct {
 	Progress int    `json:"progress"`
 	URL      string `json:"url,omitempty"`
 	VideoURL string `json:"video_url,omitempty"`
-	Error    *struct {
+	Metadata *struct {
+		URL string `json:"url,omitempty"`
+	} `json:"metadata,omitempty"`
+	Error *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
@@ -417,6 +420,8 @@ func (a *TaskAdaptor) ParseTaskResult(task *model.Task, _ *http.Response, body [
 		result.Url = parsed.URL
 	} else if parsed.VideoURL != "" {
 		result.Url = parsed.VideoURL
+	} else if parsed.Metadata != nil {
+		result.Url = parsed.Metadata.URL
 	}
 	return result, nil
 }

@@ -8,7 +8,31 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestParseTaskResultVideoURLLocations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"metadata URL", `{"status":"completed","metadata":{"url":"https://oss.example/video.mp4"}}`, "https://oss.example/video.mp4"},
+		{"top-level URL wins", `{"status":"completed","url":"https://first.example/video.mp4","video_url":"https://second.example/video.mp4","metadata":{"url":"https://third.example/video.mp4"}}`, "https://first.example/video.mp4"},
+		{"video URL wins", `{"status":"completed","video_url":"https://second.example/video.mp4","metadata":{"url":"https://third.example/video.mp4"}}`, "https://second.example/video.mp4"},
+		{"no metadata", `{"status":"completed"}`, ""},
+		{"null metadata", `{"status":"completed","metadata":null}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := (&TaskAdaptor{}).ParseTaskResult(&model.Task{}, nil, []byte(tc.body))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, model.TaskStatusSuccess, result.Status)
+			assert.Equal(t, tc.want, result.Url)
+		})
+	}
+}
 
 func TestEstimateBillingUsesVideoDuration(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

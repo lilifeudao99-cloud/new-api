@@ -301,7 +301,7 @@ func TaskArtifactContent(c *gin.Context) {
 			return
 		}
 		descriptor := &relaychannel.TaskContentRequest{
-			URL:            task.GetResultURL(),
+			URL:            legacyVideoResultURL(task),
 			Method:         c.Request.Method,
 			Credentialless: true,
 		}
