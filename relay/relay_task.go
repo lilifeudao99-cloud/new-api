@@ -347,6 +347,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
 	}
+	if c.Request != nil && c.Request.URL != nil && c.Request.URL.Path == "/v1/videos" && requestBody != nil {
+		// Keep a bounded prefix for failed-request diagnostics. Reconstruct the
+		// reader so the upstream receives the exact same bytes. Only JSON bodies
+		// within the cap are retained; the controller sanitizes before logging.
+		const maxTaskRequestAuditBodyBytes = 24 * 1024
+		prefix, readErr := io.ReadAll(io.LimitReader(requestBody, maxTaskRequestAuditBodyBytes+1))
+		requestBody = io.MultiReader(bytes.NewReader(prefix), requestBody)
+		if readErr == nil && len(prefix) <= maxTaskRequestAuditBodyBytes {
+			c.Set("upstream_task_request_body", string(prefix))
+		} else if readErr == nil {
+			c.Set("upstream_task_request_body_omitted", "body_exceeds_audit_limit")
+		} else {
+			c.Set("upstream_task_request_body_omitted", "body_read_failed")
+		}
+	}
 
 	// 9. 发送请求
 	resp, err := adaptor.DoRequest(c, info, requestBody)

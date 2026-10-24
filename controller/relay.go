@@ -415,6 +415,11 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other := model.NewLogOther()
 		if c.Request != nil && c.Request.URL != nil {
 			other.SetPublic("request_path", c.Request.URL.Path)
+			if c.Request.URL.Path == "/v1/videos" {
+				if request := taskRequestAuditSnapshot(c); request != nil {
+					other.SetAdmin("task_request", request)
+				}
+			}
 		}
 		other.SetPublic("error_type", err.GetErrorType())
 		other.SetPublic("error_code", err.GetErrorCode())
