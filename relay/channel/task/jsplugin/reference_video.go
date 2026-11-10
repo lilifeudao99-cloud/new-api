@@ -9,25 +9,45 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
 func (a *TaskAdaptor) prepareSeedanceReferenceUsage(c *gin.Context, info *relaycommon.RelayInfo, usageContext map[string]any) error {
-	if a.plugin.Meta.Key != "doubao" || !slices.Contains([]string{"seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5"}, info.OriginModelName) {
+	seedanceModels := []string{"seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5", "sd-2.0-A", "sd-2.0-01", "sd-2.5-A", "sd-2.5-01"}
+	if a.plugin.Meta.Key != "doubao" || (!slices.Contains(seedanceModels, info.OriginModelName) && !slices.Contains(seedanceModels, info.UpstreamModelName)) {
 		return nil
 	}
 	descriptor, err := a.buildSubmit(c, info)
 	if err != nil {
 		return err
 	}
-	if descriptor.BodyType == "multipart" && usageContext["inputVideoSeconds"] != nil {
+	if descriptor.BodyType == "multipart" && usageContext["inputVideoSeconds"] != nil && a.verifiedReferenceVideoSeconds == 0 {
 		return errors.New("verified Seedance reference video billing requires public MP4/MOV/M4V URLs instead of multipart video uploads")
 	}
 	// Inspect the final upstream body, so only references actually forwarded by
 	// this plugin contribute to the charge. Client duration hints are never used.
 	body, _ := descriptor.Body.(map[string]any)
+	if descriptor.BodyType == "multipart" {
+		body = make(map[string]any)
+		for _, part := range descriptor.Parts {
+			if part.FileRef != "" {
+				continue
+			}
+			body[part.Name] = part.Value
+			if slices.Contains([]string{"metadata", "content", "references"}, part.Name) {
+				if value, ok := part.Value.(string); ok {
+					var parsed any
+					if err := common.UnmarshalJsonStr(value, &parsed); err != nil {
+						return errors.New("invalid Seedance reference JSON")
+					}
+					body[part.Name] = parsed
+				}
+			}
+		}
+	}
 	urls, err := seedanceReferenceVideoURLs(body)
 	if err != nil {
 		return err
@@ -35,8 +55,12 @@ func (a *TaskAdaptor) prepareSeedanceReferenceUsage(c *gin.Context, info *relayc
 	if len(urls) == 0 {
 		return nil
 	}
-	if len(urls) > 3 {
-		return errors.New("Seedance supports at most 3 reference videos")
+	maxReferences := 3
+	if slices.Contains([]string{"sd-2.5-A", "sd-2.5-01"}, info.UpstreamModelName) {
+		maxReferences = 10
+	}
+	if len(urls) > maxReferences {
+		return fmt.Errorf("Seedance supports at most %d reference videos", maxReferences)
 	}
 	probe := a.probeReferenceVideo
 	if probe == nil {
@@ -63,11 +87,25 @@ func (a *TaskAdaptor) prepareSeedanceReferenceUsage(c *gin.Context, info *relayc
 		total += duration
 	}
 	usageContext["inputVideoSeconds"] = total
+	a.verifiedReferenceVideoSeconds = total
 	return nil
 }
 
 func seedanceReferenceVideoURLs(body map[string]any) ([]string, error) {
 	var urls []string
+	if references, ok := body["references"].([]any); ok {
+		for _, reference := range references {
+			entry, _ := reference.(map[string]any)
+			if entry["type"] != "video" {
+				continue
+			}
+			videoURL, _ := entry["url"].(string)
+			if strings.TrimSpace(videoURL) == "" {
+				return nil, errors.New("reference video requires an explicit public URL")
+			}
+			urls = append(urls, videoURL)
+		}
+	}
 	for _, content := range []any{body["content"], referenceVideoMetadataContent(body)} {
 		items, _ := content.([]any)
 		for _, item := range items {

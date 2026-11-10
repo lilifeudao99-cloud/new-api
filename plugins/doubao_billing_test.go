@@ -131,6 +131,72 @@ func TestDoubaoMappedSeedancePerSecondBilling(t *testing.T) {
 	}
 }
 
+func TestDoubaoSDModelRoutingAndReferenceBilling(t *testing.T) {
+	plugin := loadDoubaoPlugin(t)
+	for _, tc := range []struct {
+		model                     string
+		reference, billable, rate float64
+	}{
+		{"sd-2.0-01", 0, 5, 0.5},
+		{"sd-2.0-01", 12.2, 5, 0.5},
+		{"sd-2.0-A", 0, 5, 0.6875},
+		{"sd-2.0-A", 2.0001, 9, 0.55},
+		{"sd-2.0-A", 7.2001, 12.201, 0.55},
+		{"sd-2.5-A", 2, 9, 0.6875},
+		{"sd-2.5-01", 2.1, 5, 1.0625},
+		{"sd-2.5-01", 7.2, 8, 1.0625},
+	} {
+		t.Run(fmt.Sprintf("%s/%g", tc.model, tc.reference), func(t *testing.T) {
+			request := map[string]any{"seconds": 5, "size": "720p", "prompt": "a fox", "input_seconds": 0.001}
+			ctx := map[string]any{"model": tc.model, "upstreamModel": tc.model, "requestBody": request, "baseUrl": "https://xinfeng.best", "apiKey": "test-key"}
+			if tc.reference > 0 {
+				request["references"] = []any{map[string]any{"type": "video", "url": "https://cdn.example/reference.mp4"}}
+				ctx["inputVideoSeconds"] = tc.reference
+			}
+			facts := callDoubaoHook(t, plugin, "extractUsage", ctx)
+			assert.InDelta(t, tc.billable, facts["billable_seconds"], 1e-9)
+			assert.Equal(t, tc.reference, facts["input_seconds"])
+			expression := fmt.Sprintf(`tier("720p", u("billable_seconds") * %g)`, tc.rate)
+			schema, _ := plugin.Meta.UsageForModel(tc.model)
+			require.True(t, billing_setting.TaskExprCompatible(expression, schema))
+			cost, _, err := billingexpr.RunExprWithRequest(expression, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+			require.NoError(t, err)
+			assert.InDelta(t, tc.billable*tc.rate, cost, 1e-9)
+			submit := callDoubaoHook(t, plugin, "buildSubmitRequest", ctx)
+			assert.Equal(t, "https://xinfeng.best/v1/videos", submit["url"])
+			body := submit["body"].(map[string]any)
+			assert.Equal(t, tc.model, body["model"])
+			assert.NotContains(t, body, "input_seconds")
+			assert.Equal(t, request["references"], body["references"])
+			parsed := callDoubaoHook(t, plugin, "parseSubmitResponse", ctx, map[string]any{"body": map[string]any{"id": "video-123"}})
+			task := map[string]any{"model": tc.model, "state": parsed["state"], "baseUrl": ctx["baseUrl"], "taskId": "video-123"}
+			query := callDoubaoHook(t, plugin, "buildQueryRequest", task)
+			assert.Equal(t, "https://xinfeng.best/v1/videos/video-123", query["url"])
+			completion := callDoubaoHook(t, plugin, "extractUsageOnComplete", task, map[string]any{}, map[string]any{"status": "completed"})
+			assert.InDelta(t, tc.billable, completion["billable_seconds"], 1e-9, "polls retain measured reference duration when the provider omits usage")
+			completion = callDoubaoHook(t, plugin, "extractUsageOnComplete", task, map[string]any{}, map[string]any{"status": "completed", "seconds": 6})
+			assert.Equal(t, 6.0, completion["seconds"])
+			assert.Equal(t, tc.reference, completion["input_seconds"])
+			if tc.reference > 0 {
+				delete(ctx, "inputVideoSeconds")
+				_, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+				require.ErrorContains(t, err, "verified server-side reference duration")
+			}
+		})
+	}
+	for _, request := range []map[string]any{
+		{"seconds": 3}, {"seconds": 16}, {"seconds": 4.5},
+		{"seconds": 5, "size": "4k"},
+		{"seconds": 5, "size": "480p", "output": map[string]any{"resolution": "1080p"}},
+		{"seconds": 5, "duration": 15},
+	} {
+		_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"model": "sd-2.0-A", "requestBody": request})
+		require.Error(t, err, "%v", request)
+	}
+	_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"model": "sd-2.0-01", "requestBody": map[string]any{"seconds": 5, "size": "1080p"}})
+	require.ErrorContains(t, err, "unsupported resolution")
+}
+
 func TestDoubaoMappedSeedanceRejectsUnknownOutputDuration(t *testing.T) {
 	plugin := loadDoubaoPlugin(t)
 	for _, seconds := range []any{nil, 0, -1, 1.5, 3601, "invalid"} {

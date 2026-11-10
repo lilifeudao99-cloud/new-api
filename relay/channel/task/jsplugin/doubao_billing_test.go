@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -22,10 +23,17 @@ func TestTaskAdaptorDoubaoReferenceVideoVerification(t *testing.T) {
 	require.NoError(t, err)
 	plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: "doubao"})
 	require.NoError(t, err)
-	for _, upstream := range []string{"doubao-seedance-2-0-260128", "seedance-2.0"} {
-		t.Run(upstream, func(t *testing.T) {
+	for _, tc := range []struct{ origin, upstream string }{
+		{"seedance-2.0", "doubao-seedance-2-0-260128"},
+		{"seedance-2.0", "seedance-2.0"},
+		{"sd-2.0-A", "sd-2.0-A"},
+		{"sd-2.0-01", "sd-2.0-01"},
+		{"sd-2.5-A", "sd-2.5-A"},
+		{"sd-2.5-01", "sd-2.5-01"},
+	} {
+		t.Run(tc.upstream, func(t *testing.T) {
 			adaptor := New(plugin)
-			info := &relaycommon.RelayInfo{OriginModelName: "seedance-2.0", ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: upstream, ChannelBaseUrl: "https://upstream.example"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+			info := &relaycommon.RelayInfo{OriginModelName: tc.origin, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: tc.upstream, ChannelBaseUrl: "https://upstream.example"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
 			adaptor.Init(info)
 			calls := map[string]int{}
 			adaptor.probeReferenceVideo = func(ctx context.Context, url string) (float64, error) {
@@ -36,11 +44,18 @@ func TestTaskAdaptorDoubaoReferenceVideoVerification(t *testing.T) {
 			}
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
-			request := map[string]any{"model": "seedance-2.0", "seconds": 4, "input_seconds": 0.001,
+			request := map[string]any{"model": tc.origin, "seconds": 4, "input_seconds": 0.001,
 				"metadata": map[string]any{"content": []any{
 					map[string]any{"type": "video_url", "video_url": map[string]any{"url": "https://cdn.example/one.mp4"}},
 					map[string]any{"type": "video_url", "video_url": map[string]any{"url": "https://cdn.example/two.mp4"}},
 				}}}
+			if strings.HasPrefix(tc.origin, "sd-") {
+				delete(request, "metadata")
+				request["references"] = []any{
+					map[string]any{"type": "video", "url": "https://cdn.example/one.mp4"},
+					map[string]any{"type": "video", "url": "https://cdn.example/two.mp4"},
+				}
+			}
 			c.Set("task_request", request)
 			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 			for range 2 {
@@ -52,6 +67,14 @@ func TestTaskAdaptorDoubaoReferenceVideoVerification(t *testing.T) {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, map[string]int{"https://cdn.example/one.mp4": 1, "https://cdn.example/two.mp4": 1}, calls)
+			if tc.origin == tc.upstream && tc.origin != "seedance-2.0" {
+				response := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"test-video"}`))}
+				parsed, taskErr := adaptor.ParseResponse(c, response, info)
+				require.Nil(t, taskErr)
+				var state map[string]any
+				require.NoError(t, common.Unmarshal(parsed.PluginState, &state))
+				assert.Equal(t, 4.5, state["input_seconds"], "verified duration must survive submission for final billing")
+			}
 			adaptor.referenceVideoDurations = nil
 			adaptor.probeReferenceVideo = func(context.Context, string) (float64, error) { return 0, errors.New("signed-url-secret") }
 			_, err := adaptor.ExtractUsageFactsValidated(c, info)

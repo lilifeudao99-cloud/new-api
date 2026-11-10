@@ -83,14 +83,15 @@ const maxTaskArtifacts = 64
 const maxTaskPluginPersistedJSONBytes = 1 << 20
 
 type TaskAdaptor struct {
-	plugin                  *pluginruntime.LoadedPlugin
-	info                    *relaycommon.RelayInfo
-	submit                  *requestDescriptor
-	routeRequest            *pluginruntime.RouteRequestContext
-	requestHeaders          map[string]string
-	files                   []map[string]any
-	referenceVideoDurations map[string]float64
-	probeReferenceVideo     func(context.Context, string) (float64, error)
+	plugin                        *pluginruntime.LoadedPlugin
+	info                          *relaycommon.RelayInfo
+	submit                        *requestDescriptor
+	routeRequest                  *pluginruntime.RouteRequestContext
+	requestHeaders                map[string]string
+	files                         []map[string]any
+	referenceVideoDurations       map[string]float64
+	verifiedReferenceVideoSeconds float64
+	probeReferenceVideo           func(context.Context, string) (float64, error)
 }
 
 func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{plugin: plugin} }
@@ -1483,6 +1484,9 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 	ctx["files"] = files
 	if inputVideoSeconds > 0 {
 		ctx["inputVideoSeconds"] = inputVideoSeconds
+	}
+	if a.verifiedReferenceVideoSeconds > 0 {
+		ctx["inputVideoSeconds"] = a.verifiedReferenceVideoSeconds
 	}
 	ctx["action"] = info.Action
 	ctx["originTaskId"] = info.OriginTaskID

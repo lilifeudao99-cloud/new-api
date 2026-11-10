@@ -41,6 +41,30 @@ function seedanceUsageProfile(models, resolutions) {
   };
 }
 
+const SD_MODELS = ["sd-2.0-A", "sd-2.0-01", "sd-2.5-A", "sd-2.5-01"];
+
+function sdUsageProfile(models, resolutions) {
+  const profile = seedanceUsageProfile(models, resolutions);
+  profile.schema.billable_seconds = {
+    type: "number",
+    unit: "second",
+    description: { en: "Billable video generation unit price", zh: "视频计费时长单价" },
+  };
+  profile.examples = profile.examples.map((example) => ({
+    label: example.label,
+    facts: Object.assign({}, example.facts, {
+      billable_seconds: sdBillableSeconds(models[0], example.facts.seconds, example.facts.input_seconds),
+    }),
+  }));
+  return profile;
+}
+
+function sdBillableSeconds(model, seconds, inputSeconds) {
+  if (!inputSeconds || model === "sd-2.0-01") return seconds;
+  if (model === "sd-2.5-01") return Math.max(seconds, Math.ceil(inputSeconds));
+  return Math.max(seconds + Math.ceil(inputSeconds * 1000) / 1000, Math.ceil(seconds * 5 / 3));
+}
+
 export const meta = {
   apiVersion: 1,
   key: "doubao",
@@ -50,7 +74,7 @@ export const meta = {
     en: "Doubao Seedance video generation with native Ark and OpenAI-compatible upstreams",
     zh: "豆包 Seedance 视频生成，支持原生 Ark 与 OpenAI 兼容上游",
   },
-  version: "1.1.1",
+  version: "1.2.0",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: [
@@ -66,6 +90,7 @@ export const meta = {
     "seedance-2.0-fast",
     "seedance-2.0-mini",
     "seedance-2.5",
+    ...SD_MODELS,
   ],
   fetchMode: "per_task",
   usageSchema: {
@@ -119,6 +144,10 @@ export const meta = {
     seedanceUsageProfile(["seedance-2.0-fast"], ["720p"]),
     seedanceUsageProfile(["seedance-2.0-mini"], ["480p", "720p"]),
     seedanceUsageProfile(["seedance-2.5"], ["480p", "720p", "1080p"]),
+    sdUsageProfile(["sd-2.0-01"], ["480p", "720p"]),
+    sdUsageProfile(["sd-2.0-A"], ["480p", "720p", "1080p"]),
+    sdUsageProfile(["sd-2.5-A"], ["480p", "720p", "1080p"]),
+    sdUsageProfile(["sd-2.5-01"], ["480p", "720p", "1080p"]),
   ],
   routes: [
     { method: "POST", path: "/doubao/api/v3/contents/generations/tasks", type: "submit", decode: "createTask", render: "taskCreated" },
@@ -180,6 +209,12 @@ function normalizeResolution(value) {
 
 function xinfengSupportedResolutions(model) {
   switch (trimmed(model)) {
+    case "sd-2.0-01":
+      return ["480p", "720p"];
+    case "sd-2.0-A":
+    case "sd-2.5-A":
+    case "sd-2.5-01":
+      return ["480p", "720p", "1080p"];
     case "seedance-2.0-fast":
       return ["720p"];
     case "seedance-2.0-mini":
@@ -213,7 +248,7 @@ function validateXinfengResolution(req, model) {
 }
 
 function isXinfengSeedanceModel(model) {
-  return ["seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5"].includes(trimmed(model));
+  return ["seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5"].concat(SD_MODELS).includes(trimmed(model));
 }
 
 function isVideoReferenceValue(value) {
@@ -223,11 +258,16 @@ function isVideoReferenceValue(value) {
 }
 
 function hasReferenceInput(req, ctx) {
+  if (Array.isArray(req.references) && req.references.length > 0) return true;
+  if (Array.isArray(req.content) && req.content.some((item) => item && item.type !== "text")) return true;
+  if (req.metadata && Array.isArray(req.metadata.content) && req.metadata.content.some((item) => item && item.type !== "text")) return true;
   if (trimmed(req.input_reference) || trimmed(req.input_video) || trimmed(req.video)) return true;
   return (ctx && Array.isArray(ctx.files) && ctx.files.some((file) => file && ["input_reference", "input_video", "video"].includes(file.field))) || false;
 }
 
 function hasReferenceVideo(req, ctx) {
+  if (hasVideo(req.content)) return true;
+  if (Array.isArray(req.references) && req.references.some((reference) => reference && reference.type === "video")) return true;
   if (hasVideo(req.metadata && req.metadata.content)) return true;
   if (trimmed(req.input_video) || trimmed(req.video)) return true;
   if (isVideoReferenceValue(req.input_reference)) return true;
@@ -246,6 +286,32 @@ function referenceVideoSeconds(req, ctx) {
 function normalizeXinfengRequest(req, ctx, model) {
   const body = Object.assign({}, req || {});
   body.model = model;
+  if (SD_MODELS.includes(model)) {
+    const output = body.output || {};
+    const metadata = body.metadata || {};
+    const seconds = Number(body.seconds === undefined ? (body.duration === undefined ? (output.duration === undefined ? metadata.duration : output.duration) : body.duration) : body.seconds);
+    const maxSeconds = model.startsWith("sd-2.5-") ? 30 : 15;
+    if (!Number.isInteger(seconds) || seconds < 4 || seconds > maxSeconds) throw new Error("seconds must be an integer between 4 and " + maxSeconds);
+    body.seconds = seconds;
+    for (const candidate of [body.duration, output.duration, metadata.duration]) {
+      if (candidate !== undefined && Number(candidate) !== seconds) throw new Error("conflicting video durations");
+    }
+    const outputResolution = output.resolution || output.size || output.ratio;
+    if (body.resolution === undefined && body.size === undefined) {
+      body.resolution = metadata.resolution || (typeof outputResolution === "string" ? outputResolution.split("-")[0] : "720p");
+    }
+    const resolution = canonicalXinfengResolution(body.resolution || body.size);
+    for (const candidate of [body.resolution, body.size, metadata.resolution, output.resolution, output.size, /^\d+p(?:-|$)/i.test(String(output.ratio || "")) ? String(output.ratio).split("-")[0] : undefined]) {
+      if (candidate !== undefined && canonicalXinfengResolution(candidate) !== resolution) throw new Error("conflicting video resolutions");
+    }
+    for (const key of ["content", "references"]) {
+      if (body[key] !== undefined && !Array.isArray(body[key])) throw new Error(key + " must be an array");
+    }
+    if ((ctx.files || []).some((file) => String(file.mimeType || "").startsWith("video/") || isVideoReferenceValue(file.filename))) {
+      throw new Error("Seedance reference videos require public URLs for verified duration billing");
+    }
+    if (body.content !== undefined && body.metadata && body.metadata.content !== undefined) throw new Error("provide content only once");
+  }
   validateXinfengResolution(body, model);
   if (body.resolution !== undefined) body.size = normalizeResolution(body.resolution);
   if (body.size !== undefined) body.size = normalizeResolution(body.size);
@@ -401,8 +467,8 @@ export function buildSubmitRequest(ctx) {
         if (key === "metadata" || values[key] === undefined || values[key] === null || typeof values[key] === "object") continue;
         parts.push({ name: key, value: values[key] });
       }
-      if (values.metadata && typeof values.metadata === "object" && !Array.isArray(values.metadata)) {
-        parts.push({ name: "metadata", value: JSON.stringify(values.metadata) });
+      for (const key of ["metadata", "output", "content", "references"]) {
+        if (values[key] && typeof values[key] === "object") parts.push({ name: key, value: JSON.stringify(values[key]) });
       }
       for (const file of ctx.files) parts.push({ name: file.field, fileRef: file.ref, filename: file.filename });
       return {
@@ -466,25 +532,35 @@ export function parseSubmitResponse(ctx, resp) {
     const body = resp.body || {};
     const taskId = body.id || body.task_id;
     if (!taskId) throw new Error("task_id is empty");
-    return { taskId, taskData: body };
+    const parsed = { taskId, taskData: body };
+    if (SD_MODELS.includes(ctx.upstreamModel || ctx.model)) parsed.state = extractUsage(ctx);
+    return parsed;
   }
   if (!resp.body || !resp.body.id) throw new Error("task_id is empty");
   return { taskId: resp.body.id, taskData: resp.body };
 }
 
 export function extractUsage(ctx) {
-  const req = ctx.requestBody || {};
+  let req = ctx.requestBody || {};
   const model = ctx.upstreamModel || ctx.model;
+  if (SD_MODELS.includes(model)) req = normalizeXinfengRequest(req, ctx, model);
   if (isXinfengSeedanceModel(model)) {
     const seconds = Number(req.seconds || req.duration || 0);
     if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 3600) throw new Error("Seedance billing requires explicit seconds between 1 and 3600");
     const videoInput = Number(ctx.inputVideoSeconds) > 0 || hasReferenceVideo(req, ctx);
-    return {
+    const facts = {
       seconds: Math.min(seconds, 3600),
       input_seconds: videoInput ? referenceVideoSeconds(req, ctx) : 0,
       resolution: normalizeResolution(req.resolution || req.size || "720p"),
       video_input: videoInput ? "video" : "none",
     };
+    if (SD_MODELS.includes(model)) {
+      const maxSeconds = model.startsWith("sd-2.5-") ? 30 : 15;
+      if (seconds < 4 || seconds > maxSeconds) throw new Error("seconds must be an integer between 4 and " + maxSeconds);
+      facts.billable_seconds = sdBillableSeconds(model, seconds, facts.input_seconds);
+      if (facts.billable_seconds > 3600) throw new Error("billable video duration exceeds 3600 seconds");
+    }
+    return facts;
   }
   const metadata = req.metadata || {};
   if (ctx.usagePurpose === "billing_ratios") {
@@ -625,6 +701,15 @@ function completedSecondUsage(source) {
 
 export function extractUsageOnComplete(task, taskResult, body) {
   const model = trimmed(task && (task.upstreamModel || task.model));
+  if (SD_MODELS.includes(model)) {
+    const previous = task.state || {};
+    const facts = Object.assign({}, previous, completedSecondUsage(body || {}));
+    if (!(Number(facts.seconds) > 0)) return {};
+    const inputSeconds = Number(facts.input_seconds || 0);
+    facts.video_input = inputSeconds > 0 ? "video" : "none";
+    facts.billable_seconds = sdBillableSeconds(model, Number(facts.seconds), inputSeconds);
+    return facts;
+  }
   if (isXinfengSeedanceModel(model)) return completedSecondUsage(body || {});
   if (!body || body.status !== "succeeded") return {};
   const facts = completedSecondUsage(body);
@@ -756,15 +841,16 @@ protocols.openai_video = {
     for (const name of Object.keys(fields)) {
       req[name] = first(name);
     }
-    if (req.metadata !== undefined) {
+    for (const key of ["metadata", "output", "content", "references"]) {
+      if (req[key] === undefined) continue;
       let parsed;
       try {
-        parsed = JSON.parse(req.metadata);
+        parsed = JSON.parse(req[key]);
       } catch (e) {
-        throw new Error("metadata must be a JSON object string");
+        throw new Error(key + " must be valid JSON");
       }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("metadata must be a JSON object string");
-      req.metadata = parsed;
+      if (!parsed || typeof parsed !== "object" || ((key === "metadata" || key === "output") && Array.isArray(parsed))) throw new Error(key + " must be a JSON object or array");
+      req[key] = parsed;
     }
     if ((ctx.body.files || []).length && !isXinfengSeedanceModel(ctx.model)) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
     if (req.seconds !== undefined) req.seconds = Number(req.seconds);
