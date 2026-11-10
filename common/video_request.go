@@ -17,6 +17,7 @@ func IsTaskPluginVideoModel(model string) bool {
 	switch strings.TrimSpace(model) {
 	case "sora-2", "sora-2-pro", "wan3.0-video", "wan3.0-video-prime",
 		"seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini", "seedance-2.5",
+		"sd-2.0-A", "sd-2.0-01", "sd-2.5-A", "sd-2.5-01",
 		"muse-video", "muse-video-20s", "muse-video-30s", "muse-video-40s", "muse-video-50s", "muse-video-60s":
 		return true
 	default:

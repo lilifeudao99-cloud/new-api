@@ -19,7 +19,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	builtinplugins "github.com/QuantumNous/new-api/plugins"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -876,6 +879,67 @@ func TestPinTaskPluginEndpointClaimsWan3VideoModels(t *testing.T) {
 			require.NotNil(t, pinned.Plugin)
 			assert.Equal(t, "alibaba", pinned.Plugin.Meta.Key)
 		})
+	}
+}
+
+func TestSDVideoEndpointSelectsDoubaoChannelThroughAutoGroup(t *testing.T) {
+	require.NoError(t, appI18n.Init())
+	setupTaskPluginRouteDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	previousCache := common.MemoryCacheEnabled
+	previousGroups := setting.UserUsableGroups2JSONString()
+	previousRatios := ratio_setting.GroupRatio2JSONString()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		model.CacheUpdateChannelStatus(42, common.ChannelStatusManuallyDisabled)
+		common.MemoryCacheEnabled = previousCache
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousRatios))
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"video":"Video"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"vip":1,"video":1}`))
+	models := []string{"sd-2.0-A", "sd-2.0-01", "sd-2.5-A", "sd-2.5-01"}
+	channel := &model.Channel{
+		Id: 42, Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled,
+		Name: "Seedance", Key: "test-only", Models: strings.Join(models, ","), Group: "video",
+	}
+	channel.SetSetting(kitdto.ChannelSettings{TaskPluginKey: "doubao"})
+	require.NoError(t, channel.Insert())
+	model.InitChannelCache()
+
+	for _, modelName := range models {
+		for _, withReference := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reference=%t", modelName, withReference), func(t *testing.T) {
+				content := `[{"type":"text","text":"A flower sways in the wind"}]`
+				if withReference {
+					content = `[{"type":"text","text":"A flower sways in the wind"},{"type":"image_url","image_url":{"url":"https://example.com/flower.jpg"},"role":"reference_image"}]`
+				}
+				body := fmt.Sprintf(`{"model":%q,"seconds":"4","output":{"ratio":"480p-16x9"},"content":%s,"generate_audio":true}`, modelName, content)
+				reachedHandler := false
+				router := gin.New()
+				router.POST("/v1/videos", func(c *gin.Context) {
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, "auto")
+					common.SetContextKey(c, constant.ContextKeyUserGroup, "vip")
+					common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, []string{"video"})
+					common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, true)
+					c.Next()
+				}, PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), Distribute(), func(c *gin.Context) {
+					reachedHandler = true
+					assert.Equal(t, 42, common.GetContextKeyInt(c, constant.ContextKeyChannelId))
+					assert.Equal(t, "video", common.GetContextKeyString(c, constant.ContextKeyAutoGroup))
+					assert.Equal(t, modelName, c.GetString("resolved_task_model"))
+					assert.Equal(t, "doubao", c.GetString("task_plugin_key"))
+					assert.Equal(t, "doubao", c.GetString("expected_task_plugin_key"))
+					c.Status(http.StatusNoContent)
+				})
+				request := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
+				request.Header.Set("Content-Type", "application/json")
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+				assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+				assert.True(t, reachedHandler, "request must reach the selected channel without contacting an upstream")
+			})
+		}
 	}
 }
 
