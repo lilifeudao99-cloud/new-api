@@ -12,7 +12,9 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -95,4 +97,74 @@ func TestConvertImageEditRequestMultipart(t *testing.T) {
 
 		convertAndReplay(t, c, prompt)
 	})
+}
+
+func TestConvertImageEditRequestJSONSources(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, fields, want, wantError string
+	}{
+		{
+			name:   "CPA Image duplicate data URL regression",
+			fields: `"images":[{"image_url":"data:image/png;base64,aGVsbG8=","url":"data:image/png;base64,aGVsbG8="}]`,
+			want:   `"images":[{"image_url":"data:image/png;base64,aGVsbG8="}]`,
+		},
+		{
+			name:   "empty sources and whitespace",
+			fields: `"image":{"url":" https://example.com/image.png ","image_url":"https://example.com/image.png","file_id":" ","data":null}`,
+			want:   `"image":{"image_url":"https://example.com/image.png"}`,
+		},
+		{
+			name:   "different images remain distinct array entries",
+			fields: `"images":[{"url":"https://example.com/one.png"},{"image_url":"https://example.com/two.png"}],"mask":{"url":"https://example.com/mask.png","image_url":"https://example.com/mask.png"}`,
+			want:   `"images":[{"url":"https://example.com/one.png"},{"image_url":"https://example.com/two.png"}],"mask":{"image_url":"https://example.com/mask.png"}`,
+		},
+		{
+			name:   "preserves provider metadata and explicit zero values",
+			fields: `"image":{"image_url":{"url":"https://example.com/image.png","detail":"high"},"file_id":null,"metadata":{"id":9007199254740993,"url":"keep","data":"metadata"}},"output_compression":0,"stream":false`,
+			want:   `"image":{"image_url":{"url":"https://example.com/image.png","detail":"high"},"metadata":{"id":9007199254740993,"url":"keep","data":"metadata"}},"output_compression":0,"stream":false`,
+		},
+		{
+			name:      "rejects different URL sources with field locations",
+			fields:    `"images":[{"url":"https://example.com/one.png","image_url":"https://example.com/two.png"}]`,
+			wantError: "conflicting image sources at images[0].image_url and images[0].url",
+		},
+		{
+			name:      "does not conflate nested URL with file ID",
+			fields:    `"image":{"image_url":{"url":"https://example.com/image.png"},"file_id":"file_123"}`,
+			wantError: "conflicting image sources at image.image_url and image.file_id",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"gpt-image-2","prompt":"edit this image",` + tc.fields + `}`
+			var request dto.ImageRequest
+			require.NoError(t, common.Unmarshal([]byte(body), &request))
+			before, err := common.Marshal(request)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewBufferString(body))
+			c.Request.Header.Set("Content-Type", "application/json; charset=utf-8")
+			converted, err := (&Adaptor{}).ConvertImageRequest(c, &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesEdits}, request)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				var apiErr *types.NewAPIError
+				require.ErrorAs(t, err, &apiErr)
+				assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+				assert.True(t, types.IsSkipRetryError(apiErr))
+				assert.NotContains(t, err.Error(), "https://example.com/")
+			} else {
+				require.NoError(t, err)
+				encoded, err := common.Marshal(converted)
+				require.NoError(t, err)
+				assert.JSONEq(t, `{"model":"gpt-image-2","prompt":"edit this image",`+tc.want+`}`, string(encoded))
+				if tc.name == "preserves provider metadata and explicit zero values" {
+					assert.Contains(t, string(encoded), `"id":9007199254740993`)
+				}
+			}
+			// Retried requests must still start from the original client DTO.
+			after, err := common.Marshal(request)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after))
+		})
+	}
 }

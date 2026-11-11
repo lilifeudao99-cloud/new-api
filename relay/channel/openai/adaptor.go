@@ -505,6 +505,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	switch info.RelayMode {
 	case relayconstant.RelayModeImagesEdits:
 		if isJSONRequest(c) {
+			if err := normalizeImageEditSources(&request); err != nil {
+				return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			}
 			return request, nil
 		}
 
@@ -633,6 +636,99 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	default:
 		return request, nil
 	}
+}
+
+// normalizeImageEditSources removes empty image-source aliases and collapses
+// aliases that contain the same URL. Conflicting non-empty sources are
+// rejected rather than silently choosing one and possibly editing the wrong
+// image. This is limited to JSON image-edit requests; multipart requests are
+// already represented by their uploaded file parts.
+func normalizeImageEditSources(request *dto.ImageRequest) error {
+	fields := []struct {
+		name string
+		raw  *json.RawMessage
+	}{
+		{name: "image", raw: &request.Image},
+		{name: "images", raw: &request.Images},
+		{name: "mask", raw: &request.Mask},
+	}
+	for _, field := range fields {
+		raw := field.raw
+		if len(*raw) == 0 {
+			continue
+		}
+		normalized, err := normalizeImageSourceValue(*raw, field.name)
+		if err != nil {
+			return err
+		}
+		*raw = normalized
+	}
+	return nil
+}
+
+func normalizeImageSourceValue(raw json.RawMessage, path string) (json.RawMessage, error) {
+	switch common.GetJsonType(raw) {
+	case "array":
+		var items []json.RawMessage
+		if err := common.Unmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("invalid image array at %s: %w", path, err)
+		}
+		for i, item := range items {
+			normalized, err := normalizeImageSourceValue(item, fmt.Sprintf("%s[%d]", path, i))
+			if err != nil {
+				return nil, err
+			}
+			items[i] = normalized
+		}
+		return common.Marshal(items)
+	case "object":
+		// Preserve provider-specific metadata as raw JSON, including integers
+		// that cannot be represented exactly as float64. Only inspect source
+		// fields on the image object, not arbitrary nested provider metadata.
+		var image map[string]json.RawMessage
+		if err := common.Unmarshal(raw, &image); err != nil {
+			return nil, fmt.Errorf("invalid image object at %s: %w", path, err)
+		}
+		// These fields are alternate source forms. Empty values are ignored;
+		// only the legacy url and image_url names are equivalent aliases.
+		sourceKeys := []string{"image_url", "url", "file_id", "data", "file_data"}
+		var selectedKey string
+		var selectedURL string
+		for _, key := range sourceKeys {
+			source, ok := image[key]
+			if !ok || common.GetJsonType(source) == "null" {
+				delete(image, key)
+				continue
+			}
+			var text string
+			if common.GetJsonType(source) == "string" {
+				if err := common.Unmarshal(source, &text); err != nil {
+					return nil, fmt.Errorf("invalid image source at %s.%s: %w", path, key, err)
+				}
+				text = strings.TrimSpace(text)
+				if text == "" {
+					delete(image, key)
+					continue
+				}
+				encoded, err := common.Marshal(text)
+				if err != nil {
+					return nil, fmt.Errorf("encode image source at %s.%s: %w", path, key, err)
+				}
+				image[key] = encoded
+			}
+			if selectedKey == "" {
+				selectedKey, selectedURL = key, text
+				continue
+			}
+			aliases := (selectedKey == "image_url" && key == "url") || (selectedKey == "url" && key == "image_url")
+			if !aliases || text == "" || text != selectedURL {
+				return nil, fmt.Errorf("conflicting image sources at %s.%s and %s.%s", path, selectedKey, path, key)
+			}
+			delete(image, key)
+		}
+		return common.Marshal(image)
+	}
+	return raw, nil
 }
 
 func isJSONRequest(c *gin.Context) bool {
