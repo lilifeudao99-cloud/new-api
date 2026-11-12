@@ -344,6 +344,8 @@ func buildQueryResult(modelName string, merged map[bucketKey]counters) QueryResu
 		}
 
 		results = append(results, GroupResult{
+			RequestCount: total.requestCount,
+			SuccessCount: total.successCount,
 			Group:        group,
 			AvgTtftMs:    avg(total.ttftSumMs, total.ttftCount),
 			AvgLatencyMs: avg(total.totalLatencyMs, total.requestCount),

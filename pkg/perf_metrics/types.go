@@ -33,6 +33,9 @@ type BucketPoint struct {
 }
 
 type GroupResult struct {
+	// Exact counters are used by compatibility APIs, not inferred from rounded rates.
+	RequestCount int64         `json:"-"`
+	SuccessCount int64         `json:"-"`
 	Group        string        `json:"group"`
 	AvgTtftMs    int64         `json:"avg_ttft_ms"`
 	AvgLatencyMs int64         `json:"avg_latency_ms"`
