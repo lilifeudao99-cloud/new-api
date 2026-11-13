@@ -45,6 +45,7 @@ export type VisualTier = {
   cache_read_unit_cost?: number
   cache_create_unit_cost?: number
   cache_create_1h_unit_cost?: number
+  cache_create_12h_unit_cost?: number
   image_unit_cost?: number
   image_output_unit_cost?: number
   audio_input_unit_cost?: number
@@ -77,6 +78,7 @@ function normalizeVisualTier(tier: Partial<VisualTier> = {}): VisualTier {
     cache_read_unit_cost: Number(tier.cache_read_unit_cost) || 0,
     cache_create_unit_cost: Number(tier.cache_create_unit_cost) || 0,
     cache_create_1h_unit_cost: Number(tier.cache_create_1h_unit_cost) || 0,
+    cache_create_12h_unit_cost: Number(tier.cache_create_12h_unit_cost) || 0,
     image_unit_cost: Number(tier.image_unit_cost) || 0,
     image_output_unit_cost: Number(tier.image_output_unit_cost) || 0,
     audio_input_unit_cost: Number(tier.audio_input_unit_cost) || 0,
@@ -258,6 +260,7 @@ const ESTIMATOR_VARS = [
   { var: 'cr', stateKey: 'cacheReadTokens' },
   { var: 'cc', stateKey: 'cacheCreateTokens' },
   { var: 'cc1h', stateKey: 'cacheCreate1hTokens' },
+  { var: 'cc12h', stateKey: 'cacheCreate12hTokens' },
   { var: 'img', stateKey: 'imageTokens' },
   { var: 'img_cr', stateKey: 'imageCacheTokens' },
   { var: 'img_o', stateKey: 'imageOutputTokens' },
@@ -266,9 +269,9 @@ const ESTIMATOR_VARS = [
 ] as const
 
 export type ExtraTokenValues = Record<
-  (typeof ESTIMATOR_VARS)[number]['stateKey'],
+  Exclude<(typeof ESTIMATOR_VARS)[number]['stateKey'], 'cacheCreate12hTokens'>,
   number
->
+> & { cacheCreate12hTokens?: number }
 
 export type EvalResult = {
   cost: number
@@ -320,11 +323,12 @@ export function buildEstimatorTokens(
       extraTokenValues.imageTokens +
       extraTokenValues.audioInputTokens +
       extraTokenValues.cacheCreateTokens +
-      extraTokenValues.cacheCreate1hTokens,
+      extraTokenValues.cacheCreate1hTokens +
+      (extraTokenValues.cacheCreate12hTokens ?? 0),
     ...Object.fromEntries(
       ESTIMATOR_VARS.map((field) => [
         field.var,
-        extraTokenValues[field.stateKey],
+        extraTokenValues[field.stateKey] ?? 0,
       ])
     ),
   }

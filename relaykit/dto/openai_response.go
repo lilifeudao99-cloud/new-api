@@ -267,9 +267,21 @@ type InputTokenDetails struct {
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
 	// cache-creation price.
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-	TextTokens       int `json:"text_tokens"`
-	AudioTokens      int `json:"audio_tokens"`
-	ImageTokens      int `json:"image_tokens"`
+	// OpenAI reports disjoint writes by lifetime. Preserve missing counts versus
+	// explicit zero so incomplete stream snapshots cannot invent a TTL split.
+	CacheWriteTokensDetails *CacheWriteTokenDetails `json:"cache_write_tokens_details,omitempty"`
+	TextTokens              int                     `json:"text_tokens"`
+	AudioTokens             int                     `json:"audio_tokens"`
+	ImageTokens             int                     `json:"image_tokens"`
+}
+
+type CacheWriteTokenDetails struct {
+	TTL30mTokens *int `json:"ttl_30m_tokens,omitempty"`
+	TTL12hTokens *int `json:"ttl_12h_tokens,omitempty"`
+}
+
+func (d *CacheWriteTokenDetails) HasTokens() bool {
+	return d != nil && (d.TTL30mTokens != nil && *d.TTL30mTokens != 0 || d.TTL12hTokens != nil && *d.TTL12hTokens != 0)
 }
 
 // CachedTokenDetails describes subsets of cached_tokens. Pointers distinguish
@@ -287,6 +299,18 @@ func (d *CachedTokenDetails) HasTokens() bool {
 
 // Clone preserves presence information without sharing mutable usage fields.
 func (d InputTokenDetails) Clone() InputTokenDetails {
+	if d.CacheWriteTokensDetails != nil {
+		details := *d.CacheWriteTokensDetails
+		if details.TTL30mTokens != nil {
+			value := *details.TTL30mTokens
+			details.TTL30mTokens = &value
+		}
+		if details.TTL12hTokens != nil {
+			value := *details.TTL12hTokens
+			details.TTL12hTokens = &value
+		}
+		d.CacheWriteTokensDetails = &details
+	}
 	if d.CachedTokensDetails != nil {
 		cached := *d.CachedTokensDetails
 		if cached.TextTokens != nil {

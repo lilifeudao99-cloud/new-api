@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { ChevronDown } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -130,34 +130,43 @@ export function TierPriceFields(props: TierPriceFieldsProps) {
       : Number(props.prices[variable.key] ?? 0) > 0
   )
   const [mediaOpen, setMediaOpen] = useState(hasMediaPricing)
-  useEffect(() => {
+  const [previousHasMediaPricing, setPreviousHasMediaPricing] =
+    useState(hasMediaPricing)
+  if (hasMediaPricing !== previousHasMediaPricing) {
+    setPreviousHasMediaPricing(hasMediaPricing)
     if (hasMediaPricing) setMediaOpen(true)
-  }, [hasMediaPricing])
+  }
   const renderPriceVariable = (variable: {
     key: VisualPrice['variable']
     label: string
-  }) => (
-    <PriceField
-      key={variable.key}
-      currency={props.currency}
-      label={
-        variable.key === 'cc' && props.prices.cc1h !== undefined
-          ? t('Cache Creation (5m)')
-          : t(variable.label)
+  }) => {
+    let label = t(variable.label)
+    if (variable.key === 'cc') {
+      if (props.prices.cc1h !== undefined) {
+        label = t('Cache Creation (5m)')
+      } else if (props.prices.cc12h !== undefined) {
+        label = t('Cache Creation (30m)')
       }
-      value={props.prices[variable.key] ?? 0}
-      onChange={(value) => props.onChange(variable.key, value)}
-      included={
-        props.onInclude ? props.prices[variable.key] !== undefined : undefined
-      }
-      onInclude={
-        props.onInclude
-          ? (included) => props.onInclude?.(variable.key, included)
-          : undefined
-      }
-      invalid={props.invalidVariables?.includes(variable.key)}
-    />
-  )
+    }
+    return (
+      <PriceField
+        key={variable.key}
+        currency={props.currency}
+        label={label}
+        value={props.prices[variable.key] ?? 0}
+        onChange={(value) => props.onChange(variable.key, value)}
+        included={
+          props.onInclude ? props.prices[variable.key] !== undefined : undefined
+        }
+        onInclude={
+          props.onInclude
+            ? (included) => props.onInclude?.(variable.key, included)
+            : undefined
+        }
+        invalid={props.invalidVariables?.includes(variable.key)}
+      />
+    )
+  }
   const billingControl = props.onBillingUnitChange && (
     <Select
       items={[

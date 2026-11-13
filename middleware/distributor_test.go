@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -199,7 +201,41 @@ func TestNoAvailableChannelMessageNamesClaimingTaskPlugin(t *testing.T) {
 	plain.Request.Header.Set("Accept-Language", "en")
 	generic := noAvailableChannelMessage(plain, "default", "gpt-4o")
 	assert.NotContains(t, generic, "task plugin")
-	assert.Contains(t, generic, "gpt-4o")
+	assert.Equal(t, "This model is currently unavailable. Please switch to another model and try again.", generic)
+}
+
+func TestNoAvailableChannelResponseSuggestsSwitchingModels(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	for _, tc := range []struct {
+		language string
+		message  string
+	}{
+		{"zh-CN", "当前模型暂不可用，请切换其他模型后重试。"},
+		{"zh-TW", "目前模型暫不可用，請切換其他模型後重試。"},
+		{"en", "This model is currently unavailable. Please switch to another model and try again."},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Request.Header.Set("Accept-Language", tc.language)
+			c.Set(common.RequestIdKey, "no-channel-test-request")
+
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable,
+				noAvailableChannelMessage(c, "default", "gpt-6-luna"), types.ErrorCodeModelNotFound)
+
+			assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+			assert.Contains(t, recorder.Header().Get("Content-Type"), "application/json")
+			assert.True(t, c.IsAborted())
+			var response struct {
+				Error types.OpenAIError `json:"error"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.Equal(t, tc.message+" (request id: no-channel-test-request)", response.Error.Message)
+			assert.Equal(t, "new_api_error", response.Error.Type)
+			assert.Equal(t, "model_not_found", response.Error.Code)
+		})
+	}
 }
 
 func TestSharedEndpointRebindsToSelectedType61Plugin(t *testing.T) {

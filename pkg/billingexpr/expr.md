@@ -10,7 +10,7 @@ The expression is the billing contract between the administrator and the system.
 
 1. **Expression is self-contained** — The expression string alone determines billing. No external ratio tables, no implicit completion multipliers, no hidden conversion factors. Given the same token counts and request context, the same expression always produces the same cost.
 
-2. **Variables are opt-in** — `p` (prompt) and `c` (completion) are the base. Cache (`cr`, `cc`, `cc1h`), image (`img`), and audio (`ai`, `ao`) variables are optional. If omitted, those tokens are included in `p`/`c` and priced at their rate. The system automatically detects which variables the expression uses (via AST introspection) and adjusts token normalization accordingly.
+2. **Variables are opt-in** — `p` (prompt) and `c` (completion) are the base. Cache (`cr`, `cc`, `cc1h`, `cc12h`), image (`img`), and audio (`ai`, `ao`) variables are optional. If omitted, those tokens are included in `p`/`c` and priced at their rate. The system automatically detects which variables the expression uses (via AST introspection) and adjusts token normalization accordingly.
 
 3. **Prices are real prices** — Token coefficients are actual $/1M tokens prices as published by providers. `p * 2.5` means $2.50 per 1M prompt tokens; `fixed(0.01)` means $0.01 per request. No ratio conversion or `/2` convention is required.
 
@@ -35,6 +35,7 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `cr` | 缓存命中（读取）token 数 |
 | `cc` | 缓存创建 token 数（Claude 5分钟 TTL / 通用） |
 | `cc1h` | 缓存创建 token 数 — 1小时 TTL（Claude 专用） |
+| `cc12h` | 缓存创建 token 数 — 12小时 TTL（OpenAI） |
 | `img` | 图片输入 token 数 |
 | `img_cr` | 图片缓存读取 token 数；只有表达式显式引用且上游提供有效缓存模态明细时才单独拆分 |
 | `ai` | 音频输入 token 数 |
@@ -69,6 +70,20 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 |--------|---------|------|
 | `p * 3 + c * 15` | 500 | 没用 `ao`，音频输出包含在 `c` 里按 $15 计费 |
 | `p * 3 + c * 15 + ao * 50` | 400 | 用了 `ao`，音频 100 从 `c` 中扣除按 $50 计费 |
+
+#### OpenAI 缓存写入时长
+
+OpenAI 的 `input_tokens_details.cache_write_tokens_details`（Responses）或
+`prompt_tokens_details.cache_write_tokens_details`（兼容 Chat Completions）可包含
+`ttl_30m_tokens` 和 `ttl_12h_tokens`。依据
+https://developers.openai.com/api/docs/guides/prompt-caching ，两项互不重叠，合计应等于
+`cache_write_tokens`。缺失和显式零必须区分，复制、流式合并和协议转换均保留该明细。
+
+仅当表达式引用 `cc12h` 且明细完整、非负、与写入总量一致时，`cc` 为30分钟数量，
+`cc12h` 为12小时数量。分别计价的数量从 `p` 中扣除，`len` 始终保留完整输入长度。
+未引用 `cc12h` 的既有表达式仍将全部写入量放入 `cc`，不自动改变管理员已配置的价格。
+缺失明细时保留聚合写入计费；非法明细记录诊断后回退，不从请求的 TTL 或模型名猜测数量。
+这不是上游缓存命中或持久性的保证，真实上游是否报告该标准字段仍需回包验收。
 
 #### 图片缓存与兼容性
 

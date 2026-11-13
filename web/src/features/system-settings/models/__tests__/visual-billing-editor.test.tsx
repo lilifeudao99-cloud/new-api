@@ -20,9 +20,11 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { assert, describe, expect, test, vi } from 'vitest'
 
+import { USD_PRICING_CURRENCY } from '@/features/model-pricing/currency'
 import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
 import { evaluateBillingExpression } from '@/features/pricing/lib/billing-expression/runtime'
 
+import { TierPriceFields } from '../tier-price-fields'
 import { TieredPricingEditor } from '../tiered-pricing-editor'
 
 const expression =
@@ -30,6 +32,52 @@ const expression =
 
 const chainedExpression =
   'len <= 32000 && c <= 200 ? tier("discount", p * 0.8 + c * 2 + cr * 0.16 + cc * 0.17) : len <= 32000 ? tier("short", p * 0.8 + c * 8 + cr * 0.16 + cc * 0.17) : len <= 128000 ? tier("mid", p * 1.2 + c * 16 + cr * 0.16 + cc * 0.17) : tier("long", p * 2.4 + c * 24 + cr * 0.16 + cc * 0.17)'
+
+test('opens newly loaded media prices while preserving manual collapse across price edits', async () => {
+  const user = userEvent.setup()
+  const props = { currency: USD_PRICING_CURRENCY, onChange: vi.fn() }
+  const { rerender } = render(<TierPriceFields {...props} prices={{}} />)
+  expect(
+    screen.queryByRole('textbox', { name: 'Image input price' })
+  ).not.toBeInTheDocument()
+  rerender(<TierPriceFields {...props} prices={{ img: 8 }} />)
+  expect(
+    screen.getByRole('textbox', { name: 'Image input price' })
+  ).toHaveValue('8')
+  await user.click(screen.getByRole('button', { name: 'Media pricing' }))
+  rerender(<TierPriceFields {...props} prices={{ img: 9 }} />)
+  expect(
+    screen.queryByRole('textbox', { name: 'Image input price' })
+  ).not.toBeInTheDocument()
+  rerender(<TierPriceFields {...props} prices={{}} />)
+  rerender(<TierPriceFields {...props} prices={{ img: 10 }} />)
+  expect(
+    screen.getByRole('textbox', { name: 'Image input price' })
+  ).toHaveValue('10')
+})
+
+test('edits 12h cache pricing without changing the 30m write price', async () => {
+  const onBillingExprChange = vi.fn()
+  render(
+    <TieredPricingEditor
+      billingExpr='tier("standard", p * 2 + c * 10 + cr * 0.2 + cc * 2.5 + cc12h * 5)'
+      requestRuleExpr=''
+      onBillingExprChange={onBillingExprChange}
+      onRequestRuleExprChange={vi.fn()}
+    />
+  )
+  const tier = within(
+    screen.getByRole('group', { name: 'Pricing tier standard' })
+  )
+  expect(
+    tier.getByRole('textbox', { name: 'Cache Creation (30m)' })
+  ).toHaveValue('2.5')
+  const price = tier.getByRole('textbox', { name: 'Cache create (12h) price' })
+  expect(price).toHaveValue('5')
+  fireEvent.change(price, { target: { value: '6' } })
+  expect(onBillingExprChange.mock.lastCall?.[0]).toContain('cc12h * 6')
+  expect(onBillingExprChange.mock.lastCall?.[0]).toContain('cc * 2.5')
+})
 
 test('shows chained tiers as peer rules and edits a later rule without changing precedence', async () => {
   const onBillingExprChange = vi.fn()

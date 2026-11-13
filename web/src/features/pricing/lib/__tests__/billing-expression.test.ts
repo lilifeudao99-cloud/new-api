@@ -41,6 +41,7 @@ import {
   visualNodeId,
   type VisualCondition,
 } from '../billing-expression/visual'
+import { getDynamicPricingSummary } from '../dynamic-price'
 import {
   buildEstimatorTokens,
   evalExprLocally,
@@ -57,6 +58,55 @@ const extras: ExtraTokenValues = {
   audioInputTokens: 0,
   audioOutputTokens: 0,
 }
+
+test('round-trips 30m and 12h cache prices and includes both lifetimes in the estimator context', () => {
+  const source =
+    'len <= 272000 ? tier("standard", p * 2 + c * 10 + cr * 0.2 + cc * 2.5 + cc12h * 5) : tier("long_context", p * 4 + c * 15 + cr * 0.4 + cc * 5 + cc12h * 10)'
+  const document = parseVisualBillingDocument(source)
+  assert(document)
+  const regenerated = serializeVisualBillingDocument(document)
+  assert(regenerated.ok)
+  const values = {
+    ...extras,
+    cacheReadTokens: 4000,
+    cacheCreateTokens: 3000,
+    cacheCreate12hTokens: 4000,
+  }
+  expect(buildEstimatorTokens(1000, 100, values)).toMatchObject({
+    p: 1000,
+    len: 12000,
+    cc: 3000,
+    cc12h: 4000,
+  })
+  expect(evalExprLocally(regenerated.source, 1000, 100, values)).toMatchObject({
+    cost: 31300,
+    error: null,
+    matchedTier: 'standard',
+  })
+  const summary = getDynamicPricingSummary(
+    {
+      id: 1,
+      model_name: 'gpt-6.2-sol',
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 1,
+      enable_groups: ['default'],
+      billing_mode: 'tiered_expr',
+      billing_expr: source,
+    },
+    { tokenUnit: 'M' }
+  )
+  expect(summary?.entries.find((entry) => entry.key === 'cc')).toMatchObject({
+    value: 2.5,
+    label: 'Cache Creation (30m)',
+  })
+  expect(summary?.entries.find((entry) => entry.key === 'cc12h')).toMatchObject(
+    {
+      value: 5,
+      shortLabel: 'Cache Write (12h)',
+    }
+  )
+})
 
 test('evaluates and round-trips separate image cache prices including an explicit zero', () => {
   const source =
