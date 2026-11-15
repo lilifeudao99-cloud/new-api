@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "rsbuild dev",
-    "build": "rsbuild build",
-    "build:check": "tsgo -b && rsbuild build",
+    "build": "bun run icons:generate && rsbuild build",
+    "build:check": "bun run icons:generate && tsgo -b && rsbuild build",
+    "icons:generate": "node scripts/generate-lobe-icon-loaders.mjs",
     "typecheck": "tsgo -b",
     "lint": "oxlint -c .oxlintrc.json .",
     "lint:fix": "oxlint -c .oxlintrc.json . --fix",

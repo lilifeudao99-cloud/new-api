@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CherryStudio } from '@lobehub/icons'
+import CherryStudioColor from '@lobehub/icons/es/CherryStudio/components/Color'
 import { Link } from '@tanstack/react-router'
 import { ArrowRight, BookOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -192,7 +192,7 @@ export function Hero(props: HeroProps) {
                 rel='noopener noreferrer'
                 className='group border-border/40 bg-muted/15 text-foreground/80 hover:border-border hover:bg-muted/30 hover:text-foreground flex items-center gap-3 rounded-full border px-5 py-2.5 text-sm font-medium shadow-[0_1px_2.5px_rgba(0,0,0,0.01)] backdrop-blur-xs transition-all duration-300 hover:scale-[1.02]'
               >
-                <CherryStudio.Color size={24} className='shrink-0' />
+                <CherryStudioColor size={24} className='shrink-0' />
                 <span>Cherry Studio</span>
               </a>
 

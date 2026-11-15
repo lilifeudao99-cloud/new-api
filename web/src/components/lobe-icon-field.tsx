@@ -39,7 +39,6 @@ export function LobeIconField(props: {
       getLobeIconNames().map((name) => ({
         value: name,
         label: name,
-        icon: getLobeIcon(name, 18),
       })),
     []
   )

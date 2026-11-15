@@ -113,6 +113,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
+	if info.StreamRecovery != nil && !info.DisablePing {
+		pingEnabled = true
+		pingInterval = DefaultPingInterval
+	}
 	if pingInterval <= 0 {
 		pingInterval = DefaultPingInterval
 	}
@@ -269,6 +273,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				ObserveStreamRecoveryTerminal(info, data)
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 
@@ -280,6 +285,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
+				if info.StreamRecovery != nil {
+					info.StreamRecovery.Observe("completed", 0, "", 0)
+				}
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return
@@ -308,6 +316,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
+	if info.StreamRecovery != nil {
+		if c.Request.Context().Err() != nil {
+			info.StreamRecovery.Observe("client_cancelled", 0, "", 0)
+		}
+		info.StreamRecovery.EndAttempt(string(info.StreamStatus.EndReason), false)
+	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
 	} else {

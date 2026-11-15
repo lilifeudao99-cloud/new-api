@@ -77,8 +77,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	//originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 
 	var (
-		newAPIError *types.NewAPIError
-		ws          *websocket.Conn
+		newAPIError    *types.NewAPIError
+		ws             *websocket.Conn
+		streamRecovery *helper.RecoveryStreamSession
 	)
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
@@ -96,6 +97,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			message := common.RewriteExternalErrorURLs(newAPIError.Error(), c.Request.Host, c.GetHeader("X-Forwarded-Proto"))
 			newAPIError.SetMessage(common.MessageWithRequestId(message, requestId))
+			if streamRecovery != nil && streamRecovery.WriteError(c, newAPIError, relayFormat) {
+				return
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -193,13 +197,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	if relaycommon.StreamRecoveryEnabled(relayInfo) && relaycommon.StreamRecoverySupportsChannel(c.GetInt("channel_type")) {
+		streamRecovery = helper.StartStreamRecovery(c, relayInfo, relaycommon.DefaultStreamRecoveryPolicy())
+		defer func() {
+			streamRecovery.StopWaiting()
+			if c.Request.Context().Err() != nil {
+				relayInfo.StreamRecovery.Observe("client_cancelled", 0, "", 0)
+			}
+			snapshot, _ := common.Marshal(relayInfo.StreamRecovery.Snapshot())
+			logger.LogInfo(c, "stream recovery: "+string(snapshot))
+		}()
+	}
+	maxRetries := common.RetryTimes
+	if relayInfo.StreamRecovery != nil {
+		maxRetries = relayInfo.StreamRecovery.Policy.MaxAttempts - 1
+	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= maxRetries; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
+			if relayInfo.StreamRecovery == nil || newAPIError == nil {
+				newAPIError = channelErr
+			}
 			break
 		}
 		addUsedChannel(c, channel.Id)
@@ -219,6 +240,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		if recovery := relayInfo.StreamRecovery; recovery != nil {
+			if !recovery.BeginAttempt(c.Request.Context(), channel.Id) {
+				if newAPIError == nil {
+					newAPIError = types.NewErrorWithStatusCode(errors.New("stream recovery wait budget exhausted"), "stream_recovery_budget", http.StatusGatewayTimeout, types.ErrOptionWithSkipRetry())
+				}
+				break
+			}
+			if !relaycommon.StreamRecoverySupportsChannel(channel.Type) {
+				// Preserve the selected provider, but never replay a stream from
+				// an adaptor that cannot report its first usable output.
+				recovery.AcceptContent()
+				streamRecovery.StopWaiting()
+			}
+		}
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -232,6 +267,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if recovery := relayInfo.StreamRecovery; recovery != nil {
+				outcome := "completed"
+				if relayInfo.StreamStatus != nil {
+					outcome = string(relayInfo.StreamStatus.EndReason)
+				}
+				recovery.EndAttempt(outcome, false)
+			}
 			relayInfo.LastError = nil
 			return
 		}
@@ -239,10 +281,25 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
+		willRetry := shouldRetry(c, newAPIError, maxRetries-retryParam.GetRetry())
+		if recovery := relayInfo.StreamRecovery; recovery != nil {
+			willRetry = willRetry && recovery.CanRetry() && relaycommon.IsTransientStreamError(newAPIError)
+			recovery.EndAttempt(relaycommon.StreamRecoveryErrorOutcome(newAPIError), willRetry)
+		}
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !willRetry {
 			break
+		}
+		if relayInfo.StreamRecovery != nil {
+			// Small bounded backoff, always cancellable by the client.
+			timer := time.NewTimer(time.Duration(relayInfo.RetryIndex+1) * 250 * time.Millisecond)
+			select {
+			case <-c.Request.Context().Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 	}
 
@@ -365,6 +422,24 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
+		return false
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return false
+	}
+	if recovery := helper.GetStreamRecovery(c); recovery != nil {
+		if recovery.ContentStarted() || !recovery.CanRetry() {
+			return false
+		}
+		if !relaycommon.IsTransientStreamError(openaiErr) {
+			return false
+		}
+		if retryTimes <= 0 || service.ShouldSkipRetryAfterChannelAffinityFailure(c) || service.GetChannelConstraints(c).SuppressesRetry() {
+			return false
+		}
+		return true
+	}
+	if c.Writer.Written() {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {

@@ -25,12 +25,14 @@ For commercial licensing, please contact support@quantumnous.com
  * - Chained properties: "OpenAI.Avatar.type={'platform'}"
  * - Size parameter: getLobeIcon("OpenAI", 20)
  */
-import * as LobeIcons from '@lobehub/icons'
-import type React from 'react'
+import type { ComponentType, ReactNode } from 'react'
 
 import { IconSub2api } from '@/assets/custom/icon-sub2api'
+import { DeferredLobeIcon, IconPlaceholder } from '@/components/lobe-icon'
 
-const CUSTOM_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
+import { lobeIconLoaders, lobeIconNames } from './lobe-icon-loaders.gen'
+
+const CUSTOM_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   Sub2API: IconSub2api,
 }
 
@@ -82,70 +84,34 @@ function parseValue(raw: string | undefined | null): string | number | boolean {
 export function getLobeIcon(
   iconName: string | undefined | null,
   size: number = 20
-): React.ReactNode {
-  if (!iconName || typeof iconName !== 'string') {
-    return (
-      <div
-        className='bg-muted text-muted-foreground flex items-center justify-center rounded-full text-xs font-medium'
-        style={{ width: size, height: size }}
-      >
-        ?
-      </div>
-    )
-  }
-
-  const trimmedName = iconName.trim()
+): ReactNode {
+  const trimmedName = typeof iconName === 'string' ? iconName.trim() : ''
   if (!trimmedName) {
-    return (
-      <div
-        className='bg-muted text-muted-foreground flex items-center justify-center rounded-full text-xs font-medium'
-        style={{ width: size, height: size }}
-      >
-        ?
-      </div>
-    )
+    return <IconPlaceholder name='' size={size} />
   }
 
   // Parse component path and chained properties
   const segments = trimmedName.split('.')
   const baseKey = segments[0]
-  const CustomIcon = CUSTOM_ICONS[baseKey]
+  const CustomIcon = Object.hasOwn(CUSTOM_ICONS, baseKey)
+    ? CUSTOM_ICONS[baseKey]
+    : undefined
   if (CustomIcon) {
     return <CustomIcon size={size} />
   }
-  const BaseIcon = (LobeIcons as Record<string, unknown>)[baseKey] as
-    | Record<string, unknown>
-    | undefined
+  const variants = Object.hasOwn(lobeIconLoaders, baseKey)
+    ? lobeIconLoaders[baseKey]
+    : undefined
+  if (!variants) return <IconPlaceholder name={trimmedName} size={size} />
 
-  let IconComponent: React.ComponentType<Record<string, unknown>> | undefined
+  let variant = 'default'
   let propStartIndex: number
 
-  if (BaseIcon && segments.length > 1 && BaseIcon[segments[1]]) {
-    IconComponent = BaseIcon[segments[1]] as React.ComponentType<
-      Record<string, unknown>
-    >
+  if (segments.length > 1 && Object.hasOwn(variants, segments[1])) {
+    variant = segments[1]
     propStartIndex = 2
   } else {
-    IconComponent = (LobeIcons as Record<string, unknown>)[baseKey] as
-      | React.ComponentType<Record<string, unknown>>
-      | undefined
     propStartIndex = segments.length > 1 && /^[A-Z]/.test(segments[1]) ? 2 : 1
-  }
-
-  // Fallback if icon not found
-  if (
-    !IconComponent ||
-    (typeof IconComponent !== 'function' && typeof IconComponent !== 'object')
-  ) {
-    const firstLetter = trimmedName.charAt(0).toUpperCase()
-    return (
-      <div
-        className='bg-muted text-muted-foreground flex items-center justify-center rounded-full text-xs font-medium'
-        style={{ width: size, height: size }}
-      >
-        {firstLetter}
-      </div>
-    )
   }
 
   // Parse chained properties (e.g., "type={'platform'}", "shape='square'")
@@ -171,13 +137,18 @@ export function getLobeIcon(
     props.size = size
   }
 
-  return <IconComponent {...props} />
+  return (
+    <DeferredLobeIcon
+      name={trimmedName}
+      iconKey={`${baseKey}.${variant}`}
+      loader={variants[variant]}
+      iconProps={props}
+      size={size}
+    />
+  )
 }
 
 // The selector uses the same installed icon registry as the renderer.
 export function getLobeIconNames(): string[] {
-  const names = LobeIcons.toc.flatMap((icon) =>
-    icon.param.hasColor ? [icon.id, `${icon.id}.Color`] : [icon.id]
-  )
-  return [...new Set([...names, ...Object.keys(CUSTOM_ICONS)])].sort()
+  return [...new Set([...lobeIconNames, ...Object.keys(CUSTOM_ICONS)])].sort()
 }

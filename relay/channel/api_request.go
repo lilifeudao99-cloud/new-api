@@ -2,10 +2,12 @@ package channel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
@@ -498,6 +500,42 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	// transparent stream retries.
 	relayClient := *client
 	relayClient.CheckRedirect = keepUpstreamRedirectResponse
+	if recovery := info.StreamRecovery; recovery != nil {
+		// Every wait follows the caller's cancellation. The recovery deadline is
+		// removed on first usable content, not after receiving response headers.
+		ctx := recovery.Context()
+		var traceMu sync.Mutex
+		var dnsStart, connectStart, tlsStart time.Time
+		trace := &httptrace.ClientTrace{
+			DNSStart: func(httptrace.DNSStartInfo) { traceMu.Lock(); dnsStart = time.Now(); traceMu.Unlock() },
+			DNSDone: func(httptrace.DNSDoneInfo) {
+				traceMu.Lock()
+				if !dnsStart.IsZero() {
+					recovery.Observe("dns", 0, "", time.Since(dnsStart))
+				}
+				traceMu.Unlock()
+			},
+			ConnectStart: func(string, string) { traceMu.Lock(); connectStart = time.Now(); traceMu.Unlock() },
+			ConnectDone: func(string, string, error) {
+				traceMu.Lock()
+				if !connectStart.IsZero() {
+					recovery.Observe("connect", 0, "", time.Since(connectStart))
+				}
+				traceMu.Unlock()
+			},
+			TLSHandshakeStart: func() { traceMu.Lock(); tlsStart = time.Now(); traceMu.Unlock() },
+			TLSHandshakeDone: func(tls.ConnectionState, error) {
+				traceMu.Lock()
+				if !tlsStart.IsZero() {
+					recovery.Observe("tls", 0, "", time.Since(tlsStart))
+				}
+				traceMu.Unlock()
+			},
+			WroteRequest:         func(httptrace.WroteRequestInfo) { recovery.Observe("request_sent", 0, "", 0) },
+			GotFirstResponseByte: func() { recovery.Observe("first_byte", 0, "", 0) },
+		}
+		req = req.WithContext(httptrace.WithClientTrace(ctx, trace))
+	}
 	if common2.DebugEnabled && req != nil && req.URL != nil {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
 		logger.LogDebug(c, fmt.Sprintf(
@@ -511,7 +549,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	var stopPinger context.CancelFunc
 	var pingerDone <-chan struct{}
-	if info.IsStream {
+	if info.IsStream && info.StreamRecovery == nil {
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
 		generalSettings := operation_setting.GetGeneralSetting()
@@ -531,11 +569,22 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	resp, err := relayClient.Do(req)
 	if err != nil {
+		if info.StreamRecovery != nil {
+			return nil, helper.StreamRecoveryTransportError(c, info.StreamRecovery, err)
+		}
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
+	}
+	if info.StreamRecovery != nil {
+		c.Set(common2.UpstreamRequestIdKey, resp.Header.Get(common2.RequestIdKey))
+		info.StreamRecovery.Observe("headers", resp.StatusCode, resp.Proto, 0)
+		if err := helper.PrepareRecoverableStream(c, resp, info); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
 	}
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
