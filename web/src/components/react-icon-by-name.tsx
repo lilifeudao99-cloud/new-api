@@ -19,6 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useState } from 'react'
 import type { IconBaseProps, IconType } from 'react-icons'
 
+import { SiAlipay, SiWechat, SiStripe } from './payment-icons.gen'
+
+const PAYMENT_ICONS: Record<string, IconType> = { SiAlipay, SiWechat, SiStripe }
+
 type IconPackModule = Record<string, unknown>
 type IconPackLoader = () => Promise<IconPackModule>
 
@@ -152,7 +156,7 @@ export function ReactIconByName({ name, ...props }: ReactIconByNameProps) {
   useEffect(() => {
     let cancelled = false
 
-    if (!iconName) return
+    if (!iconName || Object.hasOwn(PAYMENT_ICONS, iconName)) return
 
     void resolveReactIcon(iconName).then((Icon) => {
       if (!cancelled) setResolvedIcon({ iconName, Icon })
@@ -162,6 +166,11 @@ export function ReactIconByName({ name, ...props }: ReactIconByNameProps) {
       cancelled = true
     }
   }, [iconName])
+
+  if (iconName && Object.hasOwn(PAYMENT_ICONS, iconName)) {
+    const Icon = PAYMENT_ICONS[iconName]
+    return <Icon {...props} />
+  }
 
   if (!iconName || resolvedIcon?.iconName !== iconName || !resolvedIcon.Icon) {
     return null

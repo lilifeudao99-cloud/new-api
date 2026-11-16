@@ -7,7 +7,7 @@
     "dev": "rsbuild dev",
     "build": "bun run icons:generate && rsbuild build",
     "build:check": "bun run icons:generate && tsgo -b && rsbuild build",
-    "icons:generate": "node scripts/generate-lobe-icon-loaders.mjs",
+    "icons:generate": "node scripts/generate-lobe-icon-loaders.mjs && node scripts/generate-payment-icons.mjs",
     "typecheck": "tsgo -b",
     "lint": "oxlint -c .oxlintrc.json .",
     "lint:fix": "oxlint -c .oxlintrc.json . --fix",

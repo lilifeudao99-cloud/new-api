@@ -16,19 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import {
+  lazy,
+  Suspense,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { LoadingState } from '@/components/loading-state'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
-import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
-import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
-import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
-import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
@@ -59,6 +64,27 @@ interface WalletProps {
   initialShowHistory?: boolean
 }
 
+const BillingHistoryDialog = lazy(() =>
+  import('./components/dialogs/billing-history-dialog').then((module) => ({
+    default: module.BillingHistoryDialog,
+  }))
+)
+const CreemConfirmDialog = lazy(() =>
+  import('./components/dialogs/creem-confirm-dialog').then((module) => ({
+    default: module.CreemConfirmDialog,
+  }))
+)
+const PaymentConfirmDialog = lazy(() =>
+  import('./components/dialogs/payment-confirm-dialog').then((module) => ({
+    default: module.PaymentConfirmDialog,
+  }))
+)
+const TransferDialog = lazy(() =>
+  import('./components/dialogs/transfer-dialog').then((module) => ({
+    default: module.TransferDialog,
+  }))
+)
+
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
   const [user, setUser] = useState<UserWalletData | null>(null)
@@ -73,7 +99,9 @@ export function Wallet(props: WalletProps) {
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
-  const [billingDialogOpen, setBillingDialogOpen] = useState(false)
+  const [billingDialogOpen, setBillingDialogOpen] = useState(
+    props.initialShowHistory ?? false
+  )
   const [redemptionCode, setRedemptionCode] = useState('')
   const [creemDialogOpen, setCreemDialogOpen] = useState(false)
   const [selectedCreemProduct, setSelectedCreemProduct] =
@@ -112,7 +140,6 @@ export function Wallet(props: WalletProps) {
   // Fetch and refresh user data
   const fetchUser = useCallback(async () => {
     try {
-      setUserLoading(true)
       const response = await getSelf()
       if (response.success && response.data) {
         setUser(response.data as UserWalletData)
@@ -126,12 +153,13 @@ export function Wallet(props: WalletProps) {
   }, [])
 
   useEffect(() => {
+    // Fetching wallet data synchronizes with the authenticated API.
+    // eslint-disable-next-line react/set-state-in-effect
     fetchUser()
   }, [fetchUser])
 
   useEffect(() => {
     if (props.initialShowHistory) {
-      setBillingDialogOpen(true)
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [props.initialShowHistory])
@@ -209,6 +237,7 @@ export function Wallet(props: WalletProps) {
 
     if (success) {
       setConfirmDialogOpen(false)
+      setUserLoading(true)
       await fetchUser()
     }
   }
@@ -220,6 +249,7 @@ export function Wallet(props: WalletProps) {
     const success = await redeemCode(redemptionCode)
     if (success) {
       setRedemptionCode('')
+      setUserLoading(true)
       await fetchUser()
     }
   }
@@ -228,6 +258,7 @@ export function Wallet(props: WalletProps) {
   const handleTransfer = async (amount: number) => {
     const success = await transferQuota(amount)
     if (success) {
+      setUserLoading(true)
       await fetchUser()
     }
     return success
@@ -247,6 +278,7 @@ export function Wallet(props: WalletProps) {
     if (success) {
       setCreemDialogOpen(false)
       setSelectedCreemProduct(null)
+      setUserLoading(true)
       await fetchUser()
     }
   }
@@ -354,39 +386,55 @@ export function Wallet(props: WalletProps) {
         </SectionPageLayout.Content>
       </SectionPageLayout>
 
-      <PaymentConfirmDialog
-        open={confirmDialogOpen}
-        onOpenChange={setConfirmDialogOpen}
-        onConfirm={handlePaymentConfirm}
-        topupAmount={topupAmount}
-        paymentAmount={paymentAmount}
-        paymentMethod={selectedPaymentMethod}
-        calculating={calculating}
-        processing={processing || waffoProcessing || pancakeProcessing}
-        discountRate={getDiscountRate()}
-        usdExchangeRate={effectiveUsdExchangeRate}
-      />
+      {confirmDialogOpen && (
+        <Suspense fallback={<LoadingState />}>
+          <PaymentConfirmDialog
+            open={confirmDialogOpen}
+            onOpenChange={setConfirmDialogOpen}
+            onConfirm={handlePaymentConfirm}
+            topupAmount={topupAmount}
+            paymentAmount={paymentAmount}
+            paymentMethod={selectedPaymentMethod}
+            calculating={calculating}
+            processing={processing || waffoProcessing || pancakeProcessing}
+            discountRate={getDiscountRate()}
+            usdExchangeRate={effectiveUsdExchangeRate}
+          />
+        </Suspense>
+      )}
 
-      <TransferDialog
-        open={transferDialogOpen}
-        onOpenChange={setTransferDialogOpen}
-        onConfirm={handleTransfer}
-        availableQuota={user?.aff_quota ?? 0}
-        transferring={transferring}
-      />
+      {transferDialogOpen && (
+        <Suspense fallback={<LoadingState />}>
+          <TransferDialog
+            open={transferDialogOpen}
+            onOpenChange={setTransferDialogOpen}
+            onConfirm={handleTransfer}
+            availableQuota={user?.aff_quota ?? 0}
+            transferring={transferring}
+          />
+        </Suspense>
+      )}
 
-      <BillingHistoryDialog
-        open={billingDialogOpen}
-        onOpenChange={setBillingDialogOpen}
-      />
+      {billingDialogOpen && (
+        <Suspense fallback={<LoadingState />}>
+          <BillingHistoryDialog
+            open={billingDialogOpen}
+            onOpenChange={setBillingDialogOpen}
+          />
+        </Suspense>
+      )}
 
-      <CreemConfirmDialog
-        open={creemDialogOpen}
-        onOpenChange={setCreemDialogOpen}
-        onConfirm={handleCreemConfirm}
-        product={selectedCreemProduct}
-        processing={creemProcessing}
-      />
+      {creemDialogOpen && (
+        <Suspense fallback={<LoadingState />}>
+          <CreemConfirmDialog
+            open={creemDialogOpen}
+            onOpenChange={setCreemDialogOpen}
+            onConfirm={handleCreemConfirm}
+            product={selectedCreemProduct}
+            processing={creemProcessing}
+          />
+        </Suspense>
+      )}
     </>
   )
 }

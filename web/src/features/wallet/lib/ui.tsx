@@ -18,9 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
 import { CreditCard, Landmark } from 'lucide-react'
-import { type ReactNode } from 'react'
-import { SiAlipay, SiWechat, SiStripe } from 'react-icons/si'
+import type { ReactNode } from 'react'
 
+import { SiAlipay, SiWechat, SiStripe } from '@/components/payment-icons.gen'
 import { ReactIconByName } from '@/components/react-icon-by-name'
 
 import { PAYMENT_TYPES, PAYMENT_ICON_COLORS } from '../constants'
