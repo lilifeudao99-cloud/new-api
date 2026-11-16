@@ -292,6 +292,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		if relayInfo.StreamRecovery != nil {
+			// This request alone avoids channels that failed before usable output.
+			// Selection still enforces group permissions, filters and channel pins.
+			retryParam.ExcludeChannelIDs = append(retryParam.ExcludeChannelIDs, channel.Id)
 			// Small bounded backoff, always cancellable by the client.
 			timer := time.NewTimer(time.Duration(relayInfo.RetryIndex+1) * 250 * time.Millisecond)
 			select {

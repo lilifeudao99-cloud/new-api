@@ -4,9 +4,30 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func TestDefaultStreamRecoveryLeavesTimeForThreeDistinctAttempts(t *testing.T) {
+	t.Setenv("STREAM_FIRST_CONTENT_TIMEOUT_SECONDS", "")
+	t.Setenv("STREAM_RECOVERY_BUDGET_SECONDS", "")
+	t.Setenv("STREAM_RECOVERY_MAX_ATTEMPTS", "")
+	policy := DefaultStreamRecoveryPolicy()
+	assert.Equal(t, 40*time.Second, policy.FirstContentTimeout)
+	assert.Equal(t, 120*time.Second, policy.WaitBudget)
+	assert.Equal(t, 3, policy.MaxAttempts)
+}
+
+func TestStreamRecoveryRetainsExplicitTimeoutConfiguration(t *testing.T) {
+	t.Setenv("STREAM_FIRST_CONTENT_TIMEOUT_SECONDS", "25")
+	t.Setenv("STREAM_RECOVERY_BUDGET_SECONDS", "90")
+	t.Setenv("STREAM_RECOVERY_MAX_ATTEMPTS", "2")
+	policy := DefaultStreamRecoveryPolicy()
+	assert.Equal(t, 25*time.Second, policy.FirstContentTimeout)
+	assert.Equal(t, 90*time.Second, policy.WaitBudget)
+	assert.Equal(t, 2, policy.MaxAttempts)
+}
 
 func TestStreamStatus_SetEndReason_FirstWins(t *testing.T) {
 	t.Parallel()

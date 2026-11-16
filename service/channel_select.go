@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -38,12 +39,14 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 }
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
-	resetNextTry bool
+	Ctx         *gin.Context
+	TokenGroup  string
+	ModelName   string
+	RequestPath string
+	Retry       *int
+	// ExcludeChannelIDs is populated only for pre-content stream recovery.
+	ExcludeChannelIDs []int
+	resetNextTry      bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -113,6 +116,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	filters := GetChannelConstraints(param.Ctx).Filters
+	if len(param.ExcludeChannelIDs) > 0 {
+		return selectStreamRecoveryChannel(param, userGroup, filters)
+	}
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -197,6 +203,49 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	}
 	return channel, selectGroup, nil
+}
+
+// selectStreamRecoveryChannel prefers an untried channel in the actual current
+// group. Unlike legacy priority retries it does not wait for RetryTimes before
+// considering the next authorized Auto group, or reselect an exhausted channel.
+func selectStreamRecoveryChannel(param *RetryParam, userGroup string, filters []dto.ChannelFilter) (*model.Channel, string, error) {
+	group := param.TokenGroup
+	if group == "auto" {
+		group = common.GetContextKeyString(param.Ctx, constant.ContextKeyAutoGroup)
+	}
+	if _, pinned, _ := GetChannelConstraints(param.Ctx).ResolvedPin(); pinned {
+		return nil, group, nil // Never bypass explicit channel pins.
+	}
+	groups := []string{group}
+	if param.TokenGroup == "auto" {
+		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
+		index := slices.Index(autoGroups, group)
+		if index < 0 {
+			return nil, group, nil // Permission changed or no known current group.
+		}
+		if common.GetContextKeyBool(param.Ctx, constant.ContextKeyTokenCrossGroupRetry) {
+			groups = autoGroups[index:]
+		}
+	}
+	filters = append(slices.Clone(filters), dto.ChannelFilter{
+		Kind: dto.FilterExcludeChannels, ExcludedChannelIDs: slices.Clone(param.ExcludeChannelIDs),
+	})
+	for _, candidateGroup := range groups {
+		channel, err := model.GetRandomSatisfiedChannel(candidateGroup, param.ModelName, 0, filters)
+		if err != nil {
+			return nil, candidateGroup, err
+		}
+		if channel == nil {
+			continue
+		}
+		if param.TokenGroup == "auto" {
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, candidateGroup)
+			// Keep later consumers aligned with the group actually selected.
+			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, slices.Index(GetRequestAutoGroups(param.Ctx, userGroup), candidateGroup))
+		}
+		return channel, candidateGroup, nil
+	}
+	return nil, group, nil
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {

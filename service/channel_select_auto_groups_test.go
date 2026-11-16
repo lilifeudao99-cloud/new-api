@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -17,6 +18,72 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestStreamRecoverySelectsUntriedAuthorizedChannels(t *testing.T) {
+	for _, tc := range []struct {
+		name, tokenGroup                                    string
+		crossGroup, sameGroup, revoked, missingCurrent, pin bool
+		wantID                                              int
+		wantGroup                                           string
+	}{
+		{name: "fixed group prefers untried peer", tokenGroup: "vip", sameGroup: true, wantID: 2102, wantGroup: "vip"},
+		{name: "fixed group cannot borrow another group", tokenGroup: "vip", wantGroup: "vip"},
+		{name: "auto prefers actual current group over eagerly advanced cursor", tokenGroup: "auto", crossGroup: true, sameGroup: true, wantID: 2102, wantGroup: "vip"},
+		{name: "auto can use authorized next group", tokenGroup: "auto", crossGroup: true, wantID: 2103, wantGroup: "default"},
+		{name: "auto without cross group permission stays put", tokenGroup: "auto", wantGroup: "vip"},
+		{name: "auto cannot use a group outside token list", tokenGroup: "auto", crossGroup: true, revoked: true, wantGroup: "vip"},
+		{name: "auto with unknown current group fails closed", tokenGroup: "auto", crossGroup: true, missingCurrent: true, wantGroup: "removed"},
+		{name: "pinned channel cannot fail over", tokenGroup: "auto", crossGroup: true, pin: true, wantGroup: "vip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupChannelSelectAutoGroupsTest(t)
+			// A large legacy retry setting must not keep a failed stream in vip.
+			common.RetryTimes = 100
+			createChannelSelectAutoGroupsChannel(t, db, 2101, "vip", "gpt-6.1-sol")
+			if tc.sameGroup {
+				createChannelSelectAutoGroupsChannel(t, db, 2102, "vip", "gpt-6.1-sol")
+			}
+			createChannelSelectAutoGroupsChannel(t, db, 2103, "default", "gpt-6.1-sol")
+			model.InitChannelCache()
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			groups := []string{"vip", "default"}
+			if tc.revoked {
+				groups = []string{"vip"}
+			}
+			common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, groups)
+			common.SetContextKey(ctx, constant.ContextKeyTokenCrossGroupRetry, tc.crossGroup)
+			common.SetContextKey(ctx, constant.ContextKeyAutoGroup, "vip")
+			if tc.missingCurrent {
+				common.SetContextKey(ctx, constant.ContextKeyAutoGroup, "removed")
+			}
+			common.SetContextKey(ctx, constant.ContextKeyAutoGroupIndex, 1)
+			if tc.pin {
+				GetChannelConstraints(ctx).AddPin(dto.ChannelPin{ChannelId: 2101, Source: dto.PinSourceOriginTask, RetryMode: dto.PinRetrySameChannel})
+			}
+			param := &RetryParam{Ctx: ctx, TokenGroup: tc.tokenGroup, ModelName: "gpt-6.1-sol", Retry: common.GetPointer(1), ExcludeChannelIDs: []int{2101}}
+			ch, group, err := CacheGetRandomSatisfiedChannel(param)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantGroup, group)
+			if tc.wantID == 0 {
+				assert.Nil(t, ch)
+				return
+			}
+			require.NotNil(t, ch)
+			assert.Equal(t, tc.wantID, ch.Id)
+			assert.Empty(t, GetChannelConstraints(ctx).Filters, "request-scoped exclusions must not mutate shared constraints")
+			param.ExcludeChannelIDs = append(param.ExcludeChannelIDs, ch.Id)
+			ch, _, err = CacheGetRandomSatisfiedChannel(param)
+			require.NoError(t, err)
+			if tc.tokenGroup == "auto" && tc.sameGroup {
+				require.NotNil(t, ch)
+				assert.Equal(t, 2103, ch.Id)
+			} else {
+				assert.Nil(t, ch)
+			}
+		})
+	}
+}
 
 func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 	t.Helper()

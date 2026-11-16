@@ -1,6 +1,9 @@
 package model
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -9,7 +12,107 @@ import (
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+func TestStreamRecoveryExclusionsAcrossDatabases(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			dsn := "local"
+			if dialect != "sqlite" {
+				dsn = os.Getenv(map[string]string{"mysql": "TEST_MYSQL_DSN", "postgres": "TEST_POSTGRES_DSN"}[dialect])
+				if dsn == "" {
+					t.Skip("test database DSN is not configured")
+				}
+			}
+			previousDB, previousCache := DB, common.MemoryCacheEnabled
+			previousMain, previousLog, previousPath := common.MainDatabaseType(), common.LogDatabaseType(), common.SQLitePath
+			common.SQLitePath = filepath.Join(t.TempDir(), "stream-recovery.db")
+			t.Setenv("STREAM_RECOVERY_TEST_DSN", dsn)
+			database, dbType, err := chooseDB("STREAM_RECOVERY_TEST_DSN", false)
+			require.NoError(t, err)
+			sqlDB, err := database.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				DB, common.MemoryCacheEnabled, common.SQLitePath = previousDB, previousCache, previousPath
+				common.SetDatabaseTypes(previousMain, previousLog)
+				initCol()
+				InitChannelCache()
+				require.NoError(t, sqlDB.Close())
+			})
+			common.SetMainDatabaseType(dbType)
+			initCol()
+			versionQuery := "SELECT version()"
+			if dialect == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			var version string
+			require.NoError(t, database.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("%s: %s", dialect, version)
+			require.NoError(t, database.AutoMigrate(&Channel{}, &Ability{}))
+			DB = database.Begin()
+			require.NoError(t, DB.Error)
+			t.Cleanup(func() { require.NoError(t, DB.Rollback().Error) })
+			for _, spec := range []struct {
+				id                 int
+				group, model, path string
+				priority           int64
+			}{
+				{9201, "vip,default", "stream-model", "/v1/responses", 100},
+				{9202, "vip", "stream-model", "/v1/chat/completions", 90},
+				{9203, "vip", "other-model", "/v1/responses", 80},
+				{9204, "unauthorized", "stream-model", "/v1/responses", 70},
+				{9205, "vip", "stream-model", "/v1/responses", 60},
+				{9206, "vip", "stream-model", "/v1/responses", 50},
+			} {
+				ch := Channel{Id: spec.id, Name: "stream-fixture", Key: "fixture-only", Type: constant.ChannelTypeAdvancedCustom,
+					Status: common.ChannelStatusEnabled, Group: spec.group, Models: spec.model, Priority: &spec.priority}
+				ch.SetOtherSettings(kitdto.ChannelOtherSettings{AdvancedCustom: &kitdto.AdvancedCustomConfig{
+					Routes: []kitdto.AdvancedCustomRoute{{IncomingPath: spec.path, Models: []string{spec.model}}},
+				}})
+				require.NoError(t, DB.Create(&ch).Error)
+				require.NoError(t, ch.AddAbilities(DB))
+			}
+			for _, cached := range []bool{false, true} {
+				t.Run(map[bool]string{false: "database", true: "cache"}[cached], func(t *testing.T) {
+					common.MemoryCacheEnabled = cached
+					InitChannelCache()
+					filters := []dto.ChannelFilter{
+						{Kind: dto.FilterRequestPath, RequestPath: "/v1/responses"},
+						{Kind: dto.FilterExcludeChannels, ExcludedChannelIDs: []int{9201}},
+					}
+					for _, want := range []int{9205, 9206} {
+						ch, err := GetRandomSatisfiedChannel("vip", "stream-model", 0, filters)
+						require.NoError(t, err)
+						require.NotNil(t, ch)
+						assert.Equal(t, want, ch.Id)
+						filters[1].ExcludedChannelIDs = append(filters[1].ExcludedChannelIDs, ch.Id)
+					}
+					ch, err := GetRandomSatisfiedChannel("vip", "stream-model", 0, filters)
+					require.NoError(t, err)
+					assert.Nil(t, ch, "do not replay failed channels or bypass path/model/group constraints")
+					ch, err = GetRandomSatisfiedChannel("default", "stream-model", 0, filters)
+					require.NoError(t, err)
+					assert.Nil(t, ch, "the same channel in another group is still excluded")
+				})
+			}
+		})
+	}
+}
+
+func TestStreamRecoveryExclusionsFailClosedOnChannelLookupError(t *testing.T) {
+	const callback = "stream_recovery_test:channel_lookup_error"
+	require.NoError(t, DB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Channel" {
+			tx.AddError(errors.New("fixture channel lookup unavailable"))
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, DB.Callback().Query().Remove(callback)) })
+	got := filterAbilitiesByConstraints([]Ability{{ChannelId: 9201}}, "stream-model", []dto.ChannelFilter{
+		{Kind: dto.FilterExcludeChannels, ExcludedChannelIDs: []int{9201}},
+	})
+	assert.Empty(t, got, "lookup errors must never permit a failed channel to be replayed")
+}
 
 func TestFilterCandidateIDs(t *testing.T) {
 	alphaSetting := `{"task_plugin_key":"alpha"}`

@@ -33,12 +33,21 @@ func TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt(t *testing.T) {
 	// The complete relay uses process-global channel caches and background
 	// workers. Isolate its fixture from other controller tests and their workers.
 	if os.Getenv("NEW_API_STREAM_RECOVERY_TEST_PROCESS") != "1" {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt$", "-test.timeout=30s")
-		cmd.Env = append(os.Environ(), "NEW_API_STREAM_RECOVERY_TEST_PROCESS=1")
-		output, err := cmd.CombinedOutput()
-		require.NoError(t, err, "%s", output)
+		for _, scenario := range []string{"empty", "timeout", "third-channel", "exhausted"} {
+			t.Run(scenario, func(t *testing.T) {
+				cmd := exec.Command(os.Args[0], "-test.run=^TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt$", "-test.timeout=30s")
+				cmd.Env = append(os.Environ(), "NEW_API_STREAM_RECOVERY_TEST_PROCESS=1", "NEW_API_STREAM_RECOVERY_SCENARIO="+scenario)
+				output, err := cmd.CombinedOutput()
+				require.NoError(t, err, "%s", output)
+			})
+		}
 		return
 	}
+	scenario := os.Getenv("NEW_API_STREAM_RECOVERY_SCENARIO")
+	t.Setenv("STREAM_RECOVERY_ENABLED", "true")
+	t.Setenv("STREAM_FIRST_CONTENT_TIMEOUT_SECONDS", "1")
+	t.Setenv("STREAM_RECOVERY_BUDGET_SECONDS", "5")
+	t.Setenv("STREAM_RECOVERY_MAX_ATTEMPTS", "3")
 	gin.SetMode(gin.TestMode)
 	service.InitHttpClient()
 	previousDB, previousLogDB := model.DB, model.LOG_DB
@@ -78,11 +87,17 @@ func TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
 		require.NoError(t, sqlDB.Close())
 	})
-	var primaryCalls, backupCalls atomic.Int32
+	var primaryCalls, backupCalls, thirdCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		primaryCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
+		if scenario == "timeout" {
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"discarded-attempt\"}}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"discarded-attempt\"}}\n\n"+
 			"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens\":1},\"output\":[]}}\n\n")
 	}))
@@ -91,10 +106,26 @@ func TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt(t *testing.T) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		backupCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
+		if scenario == "third-channel" || scenario == "exhausted" {
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens\":1},\"output\":[]}}\n\n")
+			return
+		}
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"success\"}\n\n"+
 			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n")
 	}))
 	defer backup.Close()
+	third := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		thirdCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if scenario == "exhausted" {
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens\":1},\"output\":[]}}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"success\"}\n\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n")
+	}))
+	defer third.Close()
 	require.NoError(t, database.Create(&model.User{Id: 99901, Username: "stream-test", Group: "default", Quota: 123456}).Error)
 	primaryPriority, backupPriority := int64(10), int64(5)
 	primaryChannel := model.Channel{Id: 901, Type: constant.ChannelTypeOpenAI, Key: "fixture-key", BaseURL: common.GetPointer(primary.URL), Status: common.ChannelStatusEnabled, Models: "recovery-integration", Group: "default", Priority: &primaryPriority}
@@ -103,6 +134,9 @@ func TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt(t *testing.T) {
 	require.NoError(t, database.Create(&backupChannel).Error)
 	require.NoError(t, database.Create(&model.Ability{ChannelId: 901, Group: "default", Model: "recovery-integration", Enabled: true, Priority: &primaryPriority}).Error)
 	require.NoError(t, database.Create(&model.Ability{ChannelId: 902, Group: "default", Model: "recovery-integration", Enabled: true, Priority: &backupPriority}).Error)
+	thirdPriority := int64(1)
+	require.NoError(t, database.Create(&model.Channel{Id: 903, Type: constant.ChannelTypeOpenAI, Key: "fixture-key", BaseURL: common.GetPointer(third.URL), Status: common.ChannelStatusEnabled, Models: "recovery-integration", Group: "default", Priority: &thirdPriority}).Error)
+	require.NoError(t, database.Create(&model.Ability{ChannelId: 903, Group: "default", Model: "recovery-integration", Enabled: true, Priority: &thirdPriority}).Error)
 	model.InitChannelCache()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -116,26 +150,46 @@ func TestStreamRecoveryRelayFailoverDoesNotSettleEmptyAttempt(t *testing.T) {
 	c.Set(common.RequestIdKey, "recovery-request-id")
 	require.Nil(t, middleware.SetupContextForSelectedChannel(c, &primaryChannel, "recovery-integration"))
 	Relay(c, types.RelayFormatOpenAIResponses)
-	assert.Equal(t, 200, recorder.Code)
 	assert.EqualValues(t, 1, primaryCalls.Load())
 	assert.EqualValues(t, 1, backupCalls.Load())
-	assert.Contains(t, recorder.Body.String(), "success")
 	assert.NotContains(t, recorder.Body.String(), "discarded-attempt")
 	var logs []model.Log
 	require.NoError(t, database.Order("id").Find(&logs).Error)
-	require.Len(t, logs, 2, "one failed-attempt error plus one final consume log")
+	wantAttempts, wantChannel := 2, 902
+	if scenario == "third-channel" || scenario == "exhausted" {
+		wantAttempts, wantChannel = 3, 903
+		assert.EqualValues(t, 1, thirdCalls.Load())
+	} else {
+		assert.Zero(t, thirdCalls.Load())
+	}
+	require.Len(t, logs, wantAttempts, "failed attempts are logged; only usable output is settled")
 	assert.Equal(t, model.LogTypeError, logs[0].Type)
 	assert.Equal(t, 901, logs[0].ChannelId)
-	assert.Equal(t, model.LogTypeConsume, logs[1].Type)
-	assert.Equal(t, 902, logs[1].ChannelId)
-	assert.Equal(t, 5, logs[1].CompletionTokens)
 	for _, log := range logs {
 		assert.Equal(t, "recovery-request-id", log.RequestId)
 		assert.NotContains(t, log.Other, "private integration prompt")
 	}
-	assert.Contains(t, logs[1].Other, "first_content_ms")
-	assert.Contains(t, logs[1].Other, "stream_empty")
-	assert.Contains(t, logs[1].Other, `"attempt":2`)
+	if scenario == "exhausted" {
+		assert.NotContains(t, recorder.Body.String(), "success")
+		assert.Contains(t, recorder.Body.String(), "error")
+		for _, log := range logs {
+			assert.Equal(t, model.LogTypeError, log.Type, "empty attempts must not produce a consume row")
+		}
+		return
+	}
+	assert.Equal(t, 200, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "success")
+	assert.NotContains(t, recorder.Body.String(), `"error"`, "intermediate errors must not reach the client")
+	finalLog := logs[len(logs)-1]
+	assert.Equal(t, model.LogTypeConsume, finalLog.Type)
+	assert.Equal(t, wantChannel, finalLog.ChannelId)
+	assert.Equal(t, 5, finalLog.CompletionTokens)
+	assert.Contains(t, finalLog.Other, "first_content_ms")
+	if scenario == "timeout" {
+		assert.Contains(t, finalLog.Other, "first_content_timeout")
+	} else {
+		assert.Contains(t, finalLog.Other, "stream_empty")
+	}
 }
 
 func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing.T) {

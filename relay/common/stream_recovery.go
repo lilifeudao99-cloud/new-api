@@ -32,7 +32,7 @@ type StreamRecoveryPolicy struct {
 
 func DefaultStreamRecoveryPolicy() StreamRecoveryPolicy {
 	return StreamRecoveryPolicy{
-		FirstContentTimeout: time.Duration(max(1, common.GetEnvOrDefault("STREAM_FIRST_CONTENT_TIMEOUT_SECONDS", 75))) * time.Second,
+		FirstContentTimeout: time.Duration(max(1, common.GetEnvOrDefault("STREAM_FIRST_CONTENT_TIMEOUT_SECONDS", 40))) * time.Second,
 		WaitBudget:          time.Duration(max(1, common.GetEnvOrDefault("STREAM_RECOVERY_BUDGET_SECONDS", 120))) * time.Second,
 		MaxAttempts:         min(5, max(1, common.GetEnvOrDefault("STREAM_RECOVERY_MAX_ATTEMPTS", 3))),
 		HeartbeatInterval:   10 * time.Second,
