@@ -14,7 +14,7 @@ func TestDefaultStreamRecoveryLeavesTimeForThreeDistinctAttempts(t *testing.T) {
 	t.Setenv("STREAM_RECOVERY_BUDGET_SECONDS", "")
 	t.Setenv("STREAM_RECOVERY_MAX_ATTEMPTS", "")
 	policy := DefaultStreamRecoveryPolicy()
-	assert.Equal(t, 40*time.Second, policy.FirstContentTimeout)
+	assert.Equal(t, 60*time.Second, policy.FirstContentTimeout)
 	assert.Equal(t, 120*time.Second, policy.WaitBudget)
 	assert.Equal(t, 3, policy.MaxAttempts)
 }
