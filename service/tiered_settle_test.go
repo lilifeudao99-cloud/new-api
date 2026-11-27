@@ -399,13 +399,18 @@ func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *test
 	require.Nil(t, PrepareTieredBillingForSelectedGroup(ctx, relayInfo))
 	require.NotNil(t, relayInfo.Billing)
 	assert.False(t, relayInfo.PriceData.FreeModel, "FreeModel must be cleared after switching to a paid group")
-	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
+	assert.Zero(t, relayInfo.FinalPreConsumedQuota, "wallet above $0.50 is charged at settlement, not on group selection")
 	assert.Equal(t, 0.20, relayInfo.TieredBillingSnapshot.GroupRatio)
 	assert.Equal(t, 100_000, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
 
 	userQuota, err := model.GetUserQuota(userID, false)
 	require.NoError(t, err)
-	assert.Equal(t, 400_000, userQuota)
+	assert.Equal(t, 500_000, userQuota)
+	require.NoError(t, relayInfo.Billing.Settle(75_000))
+	require.NoError(t, relayInfo.Billing.Settle(75_000))
+	userQuota, err = model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 425_000, userQuota, "switching from free to paid must still charge actual usage exactly once")
 }
 
 func TestPrepareTieredBillingForSelectedGroupPaidToFreeKeepsFreeModelFalse(t *testing.T) {

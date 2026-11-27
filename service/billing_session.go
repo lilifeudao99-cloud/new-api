@@ -31,6 +31,7 @@ type BillingSession struct {
 	tokenConsumed    int  // 令牌额度实际扣减量
 	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
 	trusted          bool // 是否命中信任额度旁路
+	walletDeferred   bool // 钱包超过 $0.50 时不预扣钱包，令牌限额仍独立预扣
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
@@ -38,13 +39,17 @@ type BillingSession struct {
 }
 
 // NewInsufficientUserQuotaError returns the site-specific user-facing balance message.
-func NewInsufficientUserQuotaError(userID int) *types.NewAPIError {
+func NewInsufficientUserQuotaError(userID int, requiredQuota ...int) *types.NewAPIError {
 	userQuota, err := model.GetUserQuota(userID, false)
 	if err != nil {
-		userQuota = 0
+		return types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	message := fmt.Sprintf("账户余额不足，请充值后重试。当前余额：%s。", logger.FormatQuota(userQuota))
+	if userQuota > 0 && len(requiredQuota) > 0 && requiredQuota[0] > userQuota {
+		message = fmt.Sprintf("当前余额：%s，低于本次请求所需预扣额度：%s（非实际扣费）。请减少最大输出长度或充值后重试。", logger.FormatQuota(userQuota), logger.FormatQuota(requiredQuota[0]))
 	}
 	return types.NewErrorWithStatusCode(
-		fmt.Errorf("账户余额不足，请充值后重试。当前余额：%s。请登陆网站：ailili .chat 在控制台进入“钱包”完成充值。或联系站长微信：Free-and-easy-W", logger.FormatQuota(userQuota)),
+		fmt.Errorf("%s请登陆网站：ailili .chat 在控制台进入“钱包”完成充值。或联系站长微信：Free-and-easy-W", message),
 		types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
 		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 }
@@ -59,7 +64,8 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
-	if delta == 0 {
+	tokenDelta := actualQuota - s.tokenConsumed
+	if delta == 0 && tokenDelta == 0 {
 		s.settled = true
 		return nil
 	}
@@ -73,15 +79,15 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	// 2) 调整令牌额度
 	var tokenErr error
 	if !s.relayInfo.IsPlayground {
-		if delta > 0 {
-			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
-		} else {
-			tokenErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
+		if tokenDelta > 0 {
+			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, tokenDelta)
+		} else if tokenDelta < 0 {
+			tokenErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -tokenDelta)
 		}
 		if tokenErr != nil {
 			// 资金来源已提交，令牌调整失败只能记录日志；标记 settled 防止 Refund 误退资金
 			common.SysLog(fmt.Sprintf("error adjusting token quota after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
-				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
+				s.relayInfo.UserId, s.relayInfo.TokenId, tokenDelta, tokenErr.Error()))
 		}
 	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
@@ -166,13 +172,31 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 func (s *BillingSession) Reserve(targetQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.settled || s.refunded {
+		return nil
+	}
+	if s.walletDeferred {
+		if targetQuota < 0 || targetQuota >= common.MaxQuota {
+			return types.NewErrorWithStatusCode(fmt.Errorf("invalid reservation quota: %d", targetQuota), types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+		// Wallet admission is frozen for this request. Reserve only the token
+		// increase on image overrides/retries; never turn it into wallet debt
+		// before a result exists. Actual settlement still charges in full.
+		if delta := targetQuota - s.tokenConsumed; delta > 0 {
+			if err := s.reserveToken(delta); err != nil {
+				return err
+			}
+			s.tokenConsumed += delta
+		}
+		return nil
+	}
 
 	imageRequest := false
 	if s.relayInfo != nil {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
 		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
 	}
-	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+	if s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -209,11 +233,11 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	effectiveQuota := quota
 
 	// ---- 信任额度旁路 ----
-	if s.shouldTrust(c) {
+	if !s.walletDeferred && s.shouldTrust(c) {
 		s.trusted = true
 		effectiveQuota = 0
 		logger.LogInfo(c, fmt.Sprintf("用户 %d 额度充足, 信任且不需要预扣费 (funding=%s)", s.relayInfo.UserId, s.funding.Source()))
-	} else if effectiveQuota > 0 {
+	} else if effectiveQuota > 0 && !s.walletDeferred {
 		logger.LogInfo(c, fmt.Sprintf("用户 %d 需要预扣费 %s (funding=%s)", s.relayInfo.UserId, logger.FormatQuota(effectiveQuota), s.funding.Source()))
 	}
 
@@ -223,6 +247,10 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			return types.NewErrorWithStatusCode(err, types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		s.tokenConsumed = effectiveQuota
+	}
+	if s.walletDeferred {
+		effectiveQuota = 0
+		logger.LogInfo(c, fmt.Sprintf("wallet deferred until settlement (user_id=%d, token_reserved=%d)", s.relayInfo.UserId, s.tokenConsumed))
 	}
 
 	// ---- 2) 预扣资金来源 ----
@@ -237,7 +265,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		if errors.Is(err, ErrInsufficientWalletQuota) {
-			return NewInsufficientUserQuotaError(s.relayInfo.UserId)
+			logger.LogWarn(c, fmt.Sprintf("wallet pre-consume rejected (user_id=%d, model=%s, required_quota=%d)", s.relayInfo.UserId, s.relayInfo.OriginModelName, effectiveQuota))
+			return NewInsufficientUserQuotaError(s.relayInfo.UserId, effectiveQuota)
 		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
@@ -262,7 +291,7 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 			// overrides. Reserve atomically instead of admitting wallet debt.
 			if err := funding.PreConsume(delta); err != nil {
 				if errors.Is(err, ErrInsufficientWalletQuota) {
-					return NewInsufficientUserQuotaError(s.relayInfo.UserId)
+					return NewInsufficientUserQuotaError(s.relayInfo.UserId, delta)
 				}
 				return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 			}
@@ -392,17 +421,23 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}
-		if userQuota <= 0 {
-			return nil, NewInsufficientUserQuotaError(relayInfo.UserId)
-		}
-		if userQuota-preConsumedQuota < 0 {
-			return nil, NewInsufficientUserQuotaError(relayInfo.UserId)
-		}
 		relayInfo.UserQuota = userQuota
 
 		session := &BillingSession{
 			relayInfo: relayInfo,
 			funding:   &WalletFunding{userId: relayInfo.UserId},
+		}
+		threshold, err := common.QuotaFromFloatStrict(0.5 * common.QuotaPerUnit)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+		}
+		// Explicit wallet policy: above $0.50, estimates cannot reject an
+		// otherwise valid request. Token and subscription limits are separate.
+		// At or below the threshold retain the ordinary full-wallet checks.
+		session.walletDeferred = userQuota > threshold && preConsumedQuota >= 0 && preConsumedQuota < common.MaxQuota && relayInfo.QuotaClamp == nil
+		if userQuota <= 0 || preConsumedQuota >= common.MaxQuota || preConsumedQuota > userQuota && !session.walletDeferred {
+			logger.LogWarn(c, fmt.Sprintf("wallet estimate rejected (user_id=%d, model=%s, group=%s, balance_quota=%d, required_quota=%d)", relayInfo.UserId, relayInfo.OriginModelName, relayInfo.UsingGroup, userQuota, preConsumedQuota))
+			return nil, NewInsufficientUserQuotaError(relayInfo.UserId, preConsumedQuota)
 		}
 		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
 			return nil, apiErr

@@ -90,6 +90,138 @@ func TestFixedPriceBillingDatabaseMatrix(t *testing.T) {
 			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
 			t.Logf("database: %s", version)
 			runFixedPriceAccountingCases(t, db, logDB)
+			runWalletTrustCases(t, db)
+		})
+	}
+}
+
+func runWalletTrustCases(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	const balance = 9_392_412 // $18.784824; the output ceiling estimate is larger.
+	const estimate = 32_000_000
+	for i, tc := range []struct {
+		name                  string
+		format                types.RelayFormat
+		wallet, token, actual int
+		force, image, clamp   bool
+		fixed, fixedExpr      bool
+		reserve, refund       bool
+		unlimited             bool
+		quota, heldQuota      int
+		wantError             types.ErrorCode
+	}{
+		{name: "Claude trusted estimate", format: types.RelayFormatClaude, actual: 2000},
+		{name: "OpenAI trusted estimate", format: types.RelayFormatOpenAI, actual: 2000},
+		{name: "Responses trusted estimate", format: types.RelayFormatOpenAIResponses, actual: 2000},
+		{name: "Gemini trusted estimate", format: types.RelayFormatGemini, actual: 2000},
+		{name: "actual usage still charged in full", format: types.RelayFormatClaude, actual: balance + 100},
+		{name: "zero wallet rejected", wallet: -balance, format: types.RelayFormatClaude, wantError: types.ErrorCodeInsufficientUserQuota},
+		{name: "below trust threshold rejected", wallet: 1, format: types.RelayFormatClaude, wantError: types.ErrorCodeInsufficientUserQuota},
+		{name: "limited token cannot bypass estimate", token: 1, format: types.RelayFormatClaude, wantError: types.ErrorCodePreConsumeTokenQuotaFailed},
+		{name: "async wallet deferred", force: true, format: types.RelayFormatClaude, actual: 75000},
+		{name: "image wallet deferred", image: true, format: types.RelayFormatOpenAI, actual: 75000},
+		{name: "fixed price wallet deferred", fixed: true, format: types.RelayFormatOpenAI, actual: 75000},
+		{name: "fixed expression wallet deferred", fixedExpr: true, format: types.RelayFormatOpenAI, actual: 75000},
+		{name: "task wallet deferred", format: types.RelayFormatTask, actual: 75000},
+		{name: "just above half dollar passes", wallet: 250001, format: types.RelayFormatClaude, actual: 2000},
+		{name: "at half dollar keeps estimate check", wallet: 250000, format: types.RelayFormatClaude, wantError: types.ErrorCodeInsufficientUserQuota},
+		{name: "at half dollar affordable request passes", wallet: 250000, quota: 75000, heldQuota: 75000, format: types.RelayFormatClaude, actual: 60000},
+		{name: "below half dollar keeps estimate check", wallet: 249999, format: types.RelayFormatClaude, wantError: types.ErrorCodeInsufficientUserQuota},
+		{name: "unlimited token passes", wallet: 250001, unlimited: true, token: 1, format: types.RelayFormatClaude, actual: 2000},
+		{name: "image override only reserves token increase", wallet: 250001, reserve: true, image: true, format: types.RelayFormatOpenAI, actual: 75000},
+		{name: "zero actual refunds full token reservation", wallet: 250001, format: types.RelayFormatClaude},
+		{name: "failed request refunds token only", wallet: 250001, refund: true, format: types.RelayFormatClaude},
+		{name: "saturated quota cannot bypass", format: types.RelayFormatClaude, quota: common.MaxQuota, wantError: types.ErrorCodeInsufficientUserQuota},
+		{name: "clamp cannot bypass", format: types.RelayFormatClaude, clamp: true, wantError: types.ErrorCodeModelPriceError},
+		{name: "negative quota cannot bypass", format: types.RelayFormatClaude, quota: -1, wantError: types.ErrorCodeModelPriceError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wallet, tokenQuota := balance, estimate*2
+			if tc.wallet != 0 {
+				wallet = max(tc.wallet, 0)
+			}
+			if tc.token != 0 {
+				tokenQuota = tc.token
+			}
+			user := model.User{Username: fmt.Sprintf("trust_test_%d", i), Quota: wallet, Status: common.UserStatusEnabled}
+			require.NoError(t, db.Create(&user).Error)
+			token := model.Token{UserId: user.Id, Key: fmt.Sprintf("trust-test-%d", i), Name: "trust-test", RemainQuota: tokenQuota, UnlimitedQuota: tc.unlimited, Status: common.TokenStatusEnabled}
+			require.NoError(t, db.Create(&token).Error)
+			t.Cleanup(func() {
+				require.NoError(t, db.Unscoped().Delete(&token).Error)
+				require.NoError(t, db.Unscoped().Delete(&user).Error)
+			})
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest("POST", "/relay", nil)
+			ctx.Set("token_quota", tokenQuota)
+			info := &relaycommon.RelayInfo{UserId: user.Id, TokenId: token.Id, TokenKey: token.Key, TokenUnlimited: tc.unlimited, RelayFormat: tc.format, ForcePreConsume: tc.force, UserSetting: dto.UserSetting{BillingPreference: "wallet_only"}}
+			if tc.image {
+				info.Request = &dto.ImageRequest{}
+			}
+			if tc.clamp {
+				info.QuotaClamp = &common.QuotaClamp{}
+			}
+			info.PriceData.UsePrice = tc.fixed
+			if tc.fixedExpr {
+				info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{EstimatedBillingUnit: billingexpr.BillingUnitRequest}
+			}
+			quota := estimate
+			if tc.quota != 0 {
+				quota = tc.quota
+			}
+			apiErr := PreConsumeBilling(ctx, quota, info)
+			if tc.wantError != "" {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.wantError, apiErr.GetErrorCode())
+				assert.True(t, types.IsSkipRetryError(apiErr))
+				if tc.wantError == types.ErrorCodeInsufficientUserQuota && wallet > 0 {
+					assert.Contains(t, apiErr.Error(), "预扣额度")
+					assert.Contains(t, apiErr.Error(), "非实际扣费")
+				}
+			} else {
+				require.Nil(t, apiErr)
+				assert.Equal(t, tc.heldQuota, info.Billing.GetPreConsumedQuota())
+				var before model.User
+				require.NoError(t, db.First(&before, user.Id).Error)
+				assert.Equal(t, wallet-tc.heldQuota, before.Quota)
+				if tc.reserve {
+					require.NoError(t, info.Billing.Reserve(estimate+75000))
+					require.NoError(t, info.Billing.Reserve(estimate+75000), "retry must not reserve twice")
+					assert.Zero(t, info.Billing.GetPreConsumedQuota())
+					var held model.Token
+					require.NoError(t, db.First(&held, token.Id).Error)
+					assert.Equal(t, tokenQuota-estimate-75000, held.RemainQuota)
+				}
+				if tc.refund {
+					refunded := make(chan struct{}, 1)
+					const callback = "deferred_wallet_refund_observed"
+					require.NoError(t, db.Callback().Update().After("gorm:commit_or_rollback_transaction").Register(callback, func(tx *gorm.DB) {
+						if tx.Statement.Table == "tokens" && tx.Error == nil {
+							select {
+							case refunded <- struct{}{}:
+							default:
+							}
+						}
+					}))
+					t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove(callback)) })
+					info.Billing.Refund(ctx)
+					info.Billing.Refund(ctx)
+					select {
+					case <-refunded:
+					case <-time.After(5 * time.Second):
+						t.Fatal("refund did not finish")
+					}
+				} else {
+					require.NoError(t, info.Billing.Settle(tc.actual))
+					require.NoError(t, info.Billing.Settle(tc.actual), "settlement must be idempotent")
+					info.Billing.Refund(ctx) // settled requests must not refund the actual charge.
+				}
+			}
+			require.NoError(t, db.First(&user, user.Id).Error)
+			require.NoError(t, db.First(&token, token.Id).Error)
+			assert.Equal(t, wallet-tc.actual, user.Quota)
+			assert.Equal(t, tokenQuota-tc.actual, token.RemainQuota)
+			assert.Equal(t, tc.actual, token.UsedQuota)
 		})
 	}
 }
@@ -98,7 +230,7 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 	t.Helper()
 	const mixed = `len <= 32000 ? tier("short", fixed(0.01)) : tier("long", p * 2)`
 	const flat = `tier("request", fixed(0.01))`
-	const startingQuota = 2_000_000
+	const startingQuota = 200_000 // Below $0.50: exercise full reservation as well as deferred cases above.
 	const imageExpression = `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`
 	imageUsage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100,
 		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 300, ImageTokens: 600, CachedTokensDetails: &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200)}}}

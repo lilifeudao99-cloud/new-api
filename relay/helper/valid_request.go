@@ -147,6 +147,10 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
+	request.Input, err = NormalizeResponsesToolCallInput(request.Input)
+	if err != nil {
+		return nil, err
+	}
 	return request, nil
 }
 
