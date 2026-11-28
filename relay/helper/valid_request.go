@@ -147,10 +147,16 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
-	request.Input, err = NormalizeResponsesToolCallInput(request.Input)
+	normalizedInput, err := NormalizeResponsesToolCallInput(request.Input)
 	if err != nil {
+		// Ingress failures happen before relay/billing logs are initialized.
+		// Record field states only so operators can investigate without asking
+		// customers to disclose their prompts, tool results or credentials.
+		diagnostics, _ := common.Marshal(ResponsesToolCallInputDiagnostics(request.Input))
+		logger.LogWarn(c, "Responses tool-call validation rejected: user_id=%d token_id=%d diagnostics=%s", c.GetInt("id"), c.GetInt("token_id"), diagnostics)
 		return nil, err
 	}
+	request.Input = normalizedInput
 	return request, nil
 }
 

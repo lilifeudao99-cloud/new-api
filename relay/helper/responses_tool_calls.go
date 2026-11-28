@@ -42,23 +42,30 @@ func NormalizeResponsesToolCallInput(input json.RawMessage) (json.RawMessage, er
 		if kind != "function_call_output" {
 			continue
 		}
-		var callID, toolCallID, itemID string
-		for _, field := range []struct {
-			name  string
-			value *string
-		}{{"call_id", &callID}, {"tool_call_id", &toolCallID}, {"item_id", &itemID}} {
-			if raw, ok := item[field.name]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-				if err := common.Unmarshal(raw, field.value); err != nil {
-					return nil, fmt.Errorf("input[%d].%s must be a string", i, field.name)
-				}
+		var callID string
+		if raw := bytes.TrimSpace(item["call_id"]); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+			if err := common.Unmarshal(raw, &callID); err != nil {
+				return nil, fmt.Errorf("input[%d].call_id must be a string", i)
 			}
 		}
 		if callID != "" {
 			if strings.TrimSpace(callID) == "" {
 				return nil, fmt.Errorf("input[%d].call_id must not be blank", i)
 			}
-			// Canonical requests retain their original fields and bytes.
+			// Compatibility-only aliases cannot invalidate a canonical call ID.
+			// Preserve its exact value and the original request bytes.
 			continue
+		}
+		var toolCallID, itemID string
+		for _, field := range []struct {
+			name  string
+			value *string
+		}{{"tool_call_id", &toolCallID}, {"item_id", &itemID}} {
+			if raw, ok := item[field.name]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				if err := common.Unmarshal(raw, field.value); err != nil {
+					return nil, fmt.Errorf("input[%d].%s must be a string", i, field.name)
+				}
+			}
 		}
 		resolved := toolCallID
 		if itemID != "" {
@@ -84,6 +91,56 @@ func NormalizeResponsesToolCallInput(input json.RawMessage) (json.RawMessage, er
 		return input, nil
 	}
 	return common.Marshal(items)
+}
+
+// ResponsesToolCallInputDiagnostics reports only fixed field names and states.
+// Never include IDs, arguments, outputs, arbitrary keys or other request values.
+// Samples are bounded even for long, malformed conversation histories.
+func ResponsesToolCallInputDiagnostics(input json.RawMessage) map[string]any {
+	var items []map[string]json.RawMessage
+	if err := common.Unmarshal(input, &items); err != nil {
+		return map[string]any{"input_array": false}
+	}
+	var calls, outputs, missing int
+	samples := make([]map[string]any, 0)
+	for i, item := range items {
+		var kind string
+		_ = common.Unmarshal(item["type"], &kind)
+		if kind == "function_call" {
+			calls++
+		}
+		if kind != "function_call_output" {
+			continue
+		}
+		outputs++
+		states := make(map[string]string)
+		for _, name := range []string{"call_id", "tool_call_id", "item_id", "id"} {
+			raw, exists := item[name]
+			state := "missing"
+			if exists {
+				var value string
+				switch {
+				case bytes.Equal(bytes.TrimSpace(raw), []byte("null")):
+					state = "null"
+				case common.Unmarshal(raw, &value) != nil:
+					state = "non_string"
+				case strings.TrimSpace(value) == "":
+					state = "blank"
+				default:
+					state = "present"
+				}
+			}
+			states[name] = state
+		}
+		if states["call_id"] == "present" {
+			continue
+		}
+		missing++
+		if len(samples) < 8 {
+			samples = append(samples, map[string]any{"index": i, "fields": states})
+		}
+	}
+	return map[string]any{"input_array": true, "input_items": len(items), "function_calls": calls, "function_outputs": outputs, "outputs_without_call_id": missing, "samples": samples, "samples_truncated": missing > len(samples)}
 }
 
 // NormalizeResponsesToolCallBody also covers passthrough and parameter overrides
